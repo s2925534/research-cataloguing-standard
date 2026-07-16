@@ -1044,7 +1044,11 @@ def ai_suggest_slug(api_key: str, original_filename: str, file_class: str, artef
         "Suggest a short (3-6 word) descriptive filename slug for this research file, based on "
         "what the file actually is. Recover the original filename's intended words even if it has "
         "typos, missing characters, or a mid-word insertion; ignore random system-generated ID "
-        "prefixes that carry no meaning. Do not invent facts not supported by the filename/content. "
+        "prefixes that carry no meaning. Do not use generic filler words like 'file' or 'files' "
+        "unless they're actually part of what the document is (e.g. it's a manifest/inventory that "
+        "lists multiple files, or 'file' is part of an established document-type name like 'booking "
+        "file' or 'freight file specification') - do not add them just because the word appeared "
+        "somewhere in the original filename. Do not invent facts not supported by the filename/content. "
         "Reply with lowercase words separated by hyphens, no file extension, no punctuation besides "
         "hyphens, and nothing else."
     )
