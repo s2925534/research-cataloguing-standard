@@ -133,12 +133,30 @@
       "type": "string",
       "enum": ["unique", "exact_duplicate", "near_duplicate", "superseded_version", "unresolved"]
     },
-    "duplicate_group_id": { "type": ["string", "null"] },
+    "duplicate_group_id": {
+      "type": ["string", "null"],
+      "description": "Exact (SHA-256 hash) duplicate group only. See near_duplicate_group_id for content-similarity matches that aren't byte-identical."
+    },
     "canonical_catalogue_id": { "type": ["string", "null"] },
     "supersedes_catalogue_id": { "type": ["string", "null"] },
+    "near_duplicate_group_id": {
+      "type": ["string", "null"],
+      "description": "Content-similarity duplicate group, independent of duplicate_group_id (which is hash/byte-identical only). Compares content_preview - the full extracted text for short files, the first preview_max_words for long ones - via a similarity ratio above a threshold (allowing some margin for discrepancy, not requiring an exact match). Never overwrites duplicate_group_id/canonical_catalogue_id."
+    },
+    "near_duplicate_canonical_id": { "type": ["string", "null"] },
+    "near_duplicate_score": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Similarity ratio (0-1) against near_duplicate_canonical_id at detection time."
+    },
     "source_group_id": {
       "type": ["string", "null"],
       "description": "Shared identifier (slug of the base filename) linking files that are repeat exports/downloads of the same underlying report or document, e.g. 'job-management (11).csv' and 'job-management (20).csv'. Independent of duplicate_group_id/canonical_catalogue_id: members can have different content (later exports) and are never auto-excluded because of this grouping alone."
+    },
+    "schema_reference": {
+      "type": ["string", "null"],
+      "description": "Citation-safe identifier: the structural/controlled-vocabulary prefix of proposed_filename only (class, artefact type, primary/catalogue id, date, version, status, access) - deliberately excludes the descriptive tail (slug, organisation, system, origin directory), which is effectively the original filename converted into words and can carry business-sensitive detail not meant for a public thesis/paper reference."
     },
     "use_decision": {
       "type": "string",

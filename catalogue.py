@@ -235,6 +235,7 @@ CREATE TABLE IF NOT EXISTS catalogue (
     canonical_catalogue_id TEXT,
     supersedes_catalogue_id TEXT,
     source_group_id TEXT,
+    schema_reference TEXT,
     near_duplicate_group_id TEXT,
     near_duplicate_canonical_id TEXT,
     near_duplicate_score REAL,
@@ -272,6 +273,7 @@ def get_db() -> sqlite3.Connection:
     existing_cols = {row["name"] for row in conn.execute("PRAGMA table_info(catalogue)")}
     for column, coltype in (
         ("source_group_id", "TEXT"),
+        ("schema_reference", "TEXT"),
         ("near_duplicate_group_id", "TEXT"),
         ("near_duplicate_canonical_id", "TEXT"),
         ("near_duplicate_score", "REAL"),
@@ -1448,6 +1450,14 @@ def cmd_rename_plan(env: dict) -> None:
         org_system = "_".join(deduped_org_system)
         origin_final = "_".join(deduped_origin) if deduped_origin else "ROOT"
 
+        # Citation-safe reference: the structural/controlled-vocabulary
+        # prefix only (class, artefact type, catalogue/entity id, date,
+        # version, status, access) - none of the descriptive tail (slug,
+        # org, system, origin), which is effectively the original filename
+        # converted into words and can carry business-sensitive detail
+        # (client names, commercial context) not meant for a public thesis.
+        schema_reference = "_".join([cls, artefact, primary_id, date_part, "v01", status, access]).upper()
+
         base_parts = [cls, artefact, primary_id, date_part, "v01", status, access, slug_part]
         if org_system:
             base_parts.append(org_system)
@@ -1478,11 +1488,11 @@ def cmd_rename_plan(env: dict) -> None:
 
         conn.execute(
             "UPDATE catalogue SET proposed_filename = ?, rename_confidence = ?, "
-            "review_notes = ?, short_title = ?, updated_at = ? WHERE catalogue_id = ?",
-            (candidate, confidence, review_note, short_title, now, row["catalogue_id"]),
+            "review_notes = ?, short_title = ?, schema_reference = ?, updated_at = ? WHERE catalogue_id = ?",
+            (candidate, confidence, review_note, short_title, schema_reference, now, row["catalogue_id"]),
         )
-        plan_rows.append((row["catalogue_id"], row["original_filename"], candidate, row["source_path"], source,
-                          row["source_group_id"]))
+        plan_rows.append((row["catalogue_id"], row["original_filename"], candidate, schema_reference,
+                          row["source_path"], source, row["source_group_id"]))
 
     conn.commit()
     conn.close()
@@ -1491,8 +1501,10 @@ def cmd_rename_plan(env: dict) -> None:
         writer = csv.writer(fh)
         # proposed_filename sits right next to original_filename (not after
         # the long source_path) so before/after is easy to compare at a glance.
-        writer.writerow(["catalogue_id", "original_filename", "proposed_filename", "source_path", "slug_source",
-                         "source_group_id"])
+        # schema_reference is the structural prefix only (no slug/org/system/
+        # origin) - citable in a paper without exposing filename-derived detail.
+        writer.writerow(["catalogue_id", "original_filename", "proposed_filename", "schema_reference",
+                         "source_path", "slug_source", "source_group_id"])
         writer.writerows(plan_rows)
 
     print(
