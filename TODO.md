@@ -30,7 +30,9 @@
 
 - [x] Add a `human_review_queue.csv` triage view/report. (`catalogue.py review-queue`,
       ranks records by why they need a look, not just a dump of every record)
-- [ ] Add lightweight tests for `setup.py` (config validation, schema merge).
+- [x] Add lightweight tests for `setup.py` (config validation, schema merge).
+      (`tests/test_setup.py`, stdlib `unittest`, run via `python3 -m unittest
+      discover tests`)
 - [ ] Consider validating generated catalogue records against
       `schema.generated.json` (e.g. via `jsonschema` package) as part of Pass 2.
 - [x] Add a `summary` column (short one-line description of what the file is
