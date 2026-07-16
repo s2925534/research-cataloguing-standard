@@ -28,7 +28,7 @@
 - [ ] Add lightweight tests for `setup.py` (config validation, schema merge).
 - [ ] Consider validating generated catalogue records against
       `schema.generated.json` (e.g. via `jsonschema` package) as part of Pass 2.
-- [ ] Add a `summary` column (short one-line description of what the file is
+- [x] Add a `summary` column (short one-line description of what the file is
       about, already AI-generated via `catalogue.py context`) to
       `rename_plan.csv`, positioned to the right of `catalogue_id`. No new AI
       calls needed - just expose the existing DB column, same pattern as
