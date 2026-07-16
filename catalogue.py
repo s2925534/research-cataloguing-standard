@@ -25,6 +25,12 @@ Usage:
     python3 catalogue.py context [N]   # AI: fill `summary` with document purpose/producing-system/
                                         # counterparty context (costs 1 API call/record; not part of
                                         # `all` - run explicitly; optional N caps it to a pilot batch)
+    python3 catalogue.py classify-evidence [N]
+                                        # AI: flag `evidence_source_type` (industry_expert_feedback,
+                                        # change_request, survey_results, walkthrough_results, etc. -
+                                        # see project_config.json -> evidence_source_types). Most
+                                        # records match none, stored as "none" so reruns only cover
+                                        # new records. Costs 1 API call/record; not part of `all`.
     python3 catalogue.py rename-plan   # Pass 3: propose filenames, write rename_plan.csv (no renaming)
     python3 catalogue.py apply-rename [--skip-duplicates] [--nested] [--group-literature] [--execute]
                                         # Pass 4: copy sources -> instance/catalogued_files/ under their
@@ -236,6 +242,7 @@ CREATE TABLE IF NOT EXISTS catalogue (
     supersedes_catalogue_id TEXT,
     source_group_id TEXT,
     schema_reference TEXT,
+    evidence_source_type TEXT,
     near_duplicate_group_id TEXT,
     near_duplicate_canonical_id TEXT,
     near_duplicate_score REAL,
@@ -274,6 +281,7 @@ def get_db() -> sqlite3.Connection:
     for column, coltype in (
         ("source_group_id", "TEXT"),
         ("schema_reference", "TEXT"),
+        ("evidence_source_type", "TEXT"),
         ("near_duplicate_group_id", "TEXT"),
         ("near_duplicate_canonical_id", "TEXT"),
         ("near_duplicate_score", "REAL"),
@@ -567,8 +575,23 @@ def extract_html(path: Path) -> tuple[str | None, str, bool]:
 
 
 def extract_plain(path: Path) -> tuple[str | None, str, bool]:
+    """UTF-16 files (common from Windows tooling - DB dump exports, Teams/
+    Zoom transcripts) decode as UTF-8 without raising an error, since a NUL
+    byte is itself valid UTF-8 (U+0000) - it just silently interleaves a NUL
+    after every ASCII character instead of failing loudly. Detect via BOM
+    first, then fall back to a NUL-density heuristic for BOM-less UTF-16."""
     try:
-        return path.read_text(encoding="utf-8", errors="ignore"), "plain_read", False
+        raw = path.read_bytes()
+        if raw.startswith(b"\xff\xfe") or raw.startswith(b"\xfe\xff"):
+            return raw.decode("utf-16", errors="ignore"), "plain_read_utf16", False
+        if raw.startswith(b"\xef\xbb\xbf"):
+            return raw.decode("utf-8-sig", errors="ignore"), "plain_read", False
+        text = raw.decode("utf-8", errors="ignore")
+        if text and text.count("\x00") / len(text) > 0.2:
+            retried = raw.decode("utf-16", errors="ignore")
+            if retried.strip():
+                return retried, "plain_read_utf16_no_bom", False
+        return text, "plain_read", False
     except Exception as exc:
         return None, f"plain_read_error:{exc}", False
 
@@ -1317,6 +1340,57 @@ def ai_suggest_context(api_key: str, original_filename: str, file_class: str, ar
         return None
 
 
+def ai_classify_evidence_source_type(api_key: str, categories: list[str], original_filename: str,
+                                      file_class: str, artefact_type: str, content_preview: str | None) -> str | None:
+    """Optional: classify a record into one of project_config.json's
+    evidence_source_types (e.g. industry_expert_feedback, change_request,
+    survey_results, walkthrough_results) when it genuinely is one of those -
+    most records are ordinary operational documents/exports and belong to
+    none of them, which is the expected, common answer (returned as the
+    literal string "none"). Returns Python None only when the API call
+    itself fails, so the pipeline never depends on it and callers can tell
+    "checked, matched nothing" apart from "not checked yet"."""
+    if not categories:
+        return None
+    context = (content_preview or "")[:2000]
+    category_list = ", ".join(categories)
+    prompt = (
+        f"Original filename: {original_filename}\n"
+        f"File category: {file_class} / {artefact_type}\n"
+        f"Content preview: {context}\n\n"
+        f"Categories: {category_list}, none\n\n"
+        "Does this file genuinely belong to one of the categories above? Most files are ordinary "
+        "operational documents/exports and belong to none of them - only answer with a category "
+        "name if the content clearly and specifically matches it (e.g. it's literally feedback "
+        "from a named industry expert/practitioner, a formal request to change something, results "
+        "from a survey/questionnaire, or results from a walkthrough/demo session). Do not guess or "
+        "force a fit. Reply with exactly one of: {category_list}, none - nothing else."
+    )
+    payload = json.dumps({
+        "model": "gpt-4o-mini",
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0,
+        "max_tokens": 12,
+    }).encode("utf-8")
+    request = urllib.request.Request(
+        "https://api.openai.com/v1/chat/completions",
+        data=payload,
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20, context=_ssl_context()) as response:
+            result = json.loads(response.read())
+        text = result["choices"][0]["message"]["content"].strip().lower().strip(".")
+        # "none" is a legitimate, expected answer (most files match nothing)
+        # and is returned as the literal string, distinct from Python None,
+        # which means the API call itself failed - callers use that
+        # distinction to persist "none" but retry a genuine failure later.
+        return text if text in categories or text == "none" else None
+    except (urllib.error.URLError, KeyError, IndexError, json.JSONDecodeError, TimeoutError):
+        return None
+
+
 def _ssl_context():
     """Uses certifi's CA bundle when available - the stock python.org macOS
     build doesn't install root certificates, which otherwise breaks HTTPS
@@ -1491,8 +1565,9 @@ def cmd_rename_plan(env: dict) -> None:
             "review_notes = ?, short_title = ?, schema_reference = ?, updated_at = ? WHERE catalogue_id = ?",
             (candidate, confidence, review_note, short_title, schema_reference, now, row["catalogue_id"]),
         )
+        evidence_source_type = row["evidence_source_type"] if row["evidence_source_type"] not in (None, "none") else ""
         plan_rows.append((row["catalogue_id"], schema_reference, row["original_filename"], candidate,
-                          row["source_path"], source, row["source_group_id"]))
+                          evidence_source_type, row["source_path"], source, row["source_group_id"]))
 
     conn.commit()
     conn.close()
@@ -1504,8 +1579,10 @@ def cmd_rename_plan(env: dict) -> None:
         # schema_reference (structural prefix only, no slug/org/system/origin -
         # citable in a paper without exposing filename-derived detail) sits
         # right next to catalogue_id, the other stable identifier column.
+        # evidence_source_type ("" not "none", for a cleaner blank-if-unflagged
+        # look when opened in a spreadsheet) comes from `classify-evidence`.
         writer.writerow(["catalogue_id", "schema_reference", "original_filename", "proposed_filename",
-                         "source_path", "slug_source", "source_group_id"])
+                         "evidence_source_type", "source_path", "slug_source", "source_group_id"])
         writer.writerows(plan_rows)
 
     print(
@@ -1646,6 +1723,58 @@ def cmd_add_context(env: dict, limit: int | None = None) -> None:
     conn.close()
     print(f"Pass (context) complete: {filled}/{len(rows)} records given an AI-generated summary "
           f"(skipped {len(rows) - filled} on API failure).")
+
+
+def cmd_classify_evidence(env: dict, project_config: dict, limit: int | None = None) -> None:
+    """AI-assisted, opt-in (never part of `all`, one API call per record):
+    flags records that are genuinely industry expert feedback, change
+    requests, survey results, walkthrough results, etc. - categories
+    defined in project_config.json -> evidence_source_types, so a different
+    project's set is a config edit, not a code change. Most records match
+    none of them; that's stored as the literal "none" (not left blank) so
+    a rerun only classifies genuinely new/unprocessed records, rather than
+    re-spending API calls on every ordinary file every time."""
+    api_key = env.get("OPENAI_API_KEY")
+    if not api_key:
+        print("No OPENAI_API_KEY set in instance/.env - skipping (evidence classification requires it).")
+        return
+    categories = [c for c in project_config.get("evidence_source_types", []) if c]
+    if not categories:
+        print("No evidence_source_types configured in project_config.json -> evidence_source_types - skipping.")
+        return
+
+    conn = get_db()
+    now = datetime.now(timezone.utc).isoformat()
+    query = (
+        "SELECT catalogue_id, original_filename, file_class, artefact_type, content_preview "
+        "FROM catalogue WHERE is_repo_rollup = 0 AND evidence_source_type IS NULL ORDER BY catalogue_id"
+    )
+    rows = conn.execute(query).fetchall()
+    if limit:
+        rows = rows[:limit]
+
+    checked, matched = 0, Counter()
+    for row in rows:
+        result = ai_classify_evidence_source_type(
+            api_key, categories, row["original_filename"], row["file_class"] or "", row["artefact_type"] or "",
+            row["content_preview"],
+        )
+        if result is not None:  # "none" is a real, persisted answer; only a hard API failure leaves it NULL to retry
+            conn.execute(
+                "UPDATE catalogue SET evidence_source_type = ?, updated_at = ? WHERE catalogue_id = ?",
+                (result, now, row["catalogue_id"]),
+            )
+            checked += 1
+            matched[result] += 1
+        if checked % 50 == 0 and checked:
+            conn.commit()
+            print(f"  evidence classification checked {checked}/{len(rows)}...")
+
+    conn.commit()
+    conn.close()
+    flagged = {k: v for k, v in matched.items() if k != "none"}
+    print(f"Pass (classify-evidence) complete: {checked}/{len(rows)} records checked "
+          f"(skipped {len(rows) - checked} on API failure). Flagged: {dict(flagged)}")
 
 
 def apply_rename_dest_dir(row: sqlite3.Row, nested: bool, group_literature: bool, source_roots: list[Path]) -> Path:
@@ -1795,6 +1924,9 @@ def main() -> int:
     elif command == "context":
         limit = int(sys.argv[2]) if len(sys.argv) > 2 else None
         cmd_add_context(env, limit)
+    elif command == "classify-evidence":
+        limit = int(sys.argv[2]) if len(sys.argv) > 2 else None
+        cmd_classify_evidence(env, project_config, limit)
     elif command == "rename-plan":
         cmd_rename_plan(env)
     elif command == "apply-rename":

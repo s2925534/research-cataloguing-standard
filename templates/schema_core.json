@@ -158,6 +158,10 @@
       "type": ["string", "null"],
       "description": "Citation-safe identifier: the structural/controlled-vocabulary prefix of proposed_filename only (class, artefact type, primary/catalogue id, date, version, status, access) - deliberately excludes the descriptive tail (slug, organisation, system, origin directory), which is effectively the original filename converted into words and can carry business-sensitive detail not meant for a public thesis/paper reference."
     },
+    "evidence_source_type": {
+      "type": ["string", "null"],
+      "description": "(project-controlled) AI-assisted flag (catalogue.py classify-evidence) for records that are genuinely one of project_config.json -> evidence_source_types (e.g. industry_expert_feedback, change_request, survey_results, walkthrough_results). Most records match none; stored as the literal 'none' internally (blank in rename_plan.csv) rather than left unset, so a rerun only classifies genuinely new records."
+    },
     "use_decision": {
       "type": "string",
       "enum": ["main_body", "appendix", "citation_only", "analysis_only", "archive_only", "exclude", "undecided"]

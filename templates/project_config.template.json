@@ -14,6 +14,8 @@
 
   "systems": ["SYSTEM_A", "SYSTEM_B", "NA"],
 
+  "evidence_source_types": [],
+
   "extended_artefact_types": [],
 
   "extended_entity_types": [],
