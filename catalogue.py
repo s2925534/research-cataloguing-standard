@@ -25,11 +25,14 @@ Usage:
                                         # counterparty context (costs 1 API call/record; not part of
                                         # `all` - run explicitly; optional N caps it to a pilot batch)
     python3 catalogue.py rename-plan   # Pass 3: propose filenames, write rename_plan.csv (no renaming)
-    python3 catalogue.py apply-rename [--skip-duplicates] [--execute]
+    python3 catalogue.py apply-rename [--skip-duplicates] [--nested] [--group-literature] [--execute]
                                         # Pass 4: copy sources -> instance/catalogued_files/ under their
                                         # proposed_filename + a .meta.json sidecar. Dry-run by default
                                         # (prints the plan); nothing is written until --execute is passed.
                                         # --skip-duplicates omits files flagged duplicate_status=exact_duplicate.
+                                        # --nested mirrors each file's original source subdirectory instead
+                                        # of the default flat layout. --group-literature carves LIT records
+                                        # out into catalogued_files/literature/ regardless of the other layout.
     python3 catalogue.py export-jsonl  # refresh catalogue_master.jsonl from the DB
     python3 catalogue.py verify        # data-integrity regression check (filename/path consistency)
     python3 catalogue.py all           # scan + extract + enrich + duplicates + group + rename-plan + export + verify + stats
@@ -1398,16 +1401,41 @@ def cmd_add_context(env: dict, limit: int | None = None) -> None:
           f"(skipped {len(rows) - filled} on API failure).")
 
 
-def cmd_apply_rename(skip_duplicates: bool, execute: bool) -> None:
+def apply_rename_dest_dir(row: sqlite3.Row, nested: bool, group_literature: bool, source_roots: list[Path]) -> Path:
+    """Where a given record's copy lands under CATALOGUE_DIR, depending on
+    the chosen layout. group_literature takes priority over nested - LIT
+    always lands in literature/ regardless of the other layout, since the
+    point is pulling it out of whatever the main layout would otherwise be."""
+    if group_literature and row["file_class"] == "LIT":
+        return CATALOGUE_DIR / "literature"
+    if nested:
+        source_path = Path(row["source_path"])
+        for root in source_roots:
+            try:
+                rel_dir = source_path.parent.relative_to(root)
+                return CATALOGUE_DIR / rel_dir if str(rel_dir) != "." else CATALOGUE_DIR
+            except ValueError:
+                continue
+    return CATALOGUE_DIR
+
+
+def cmd_apply_rename(env: dict, skip_duplicates: bool, nested: bool, group_literature: bool, execute: bool) -> None:
     """Pass 4 (approved rename): copies each source file into
     instance/catalogued_files/ under its proposed_filename, with a
     <name>.meta.json sidecar carrying the full catalogue record. Never
     renames, moves, or deletes the source - copy only. Always a conscious,
     explicit action: not part of `all`, and dry-run (prints what it would do)
     unless --execute is passed, so a plan can be reviewed before anything is
-    written to disk."""
+    written to disk.
+
+    Layout is flat by default (everything directly under catalogued_files/).
+    --nested mirrors each file's original source subdirectory instead.
+    --group-literature carves LIT records out into catalogued_files/literature/
+    regardless of the other layout, so the ~450 literature files don't
+    dominate/crowd out everything else."""
     conn = get_db()
     now = datetime.now(timezone.utc).isoformat()
+    source_roots = [Path(r.strip()) for r in env["SOURCE_DATA_ROOTS"].split(",") if r.strip()]
     query = "SELECT * FROM catalogue WHERE is_repo_rollup = 0 AND proposed_filename IS NOT NULL AND proposed_filename != ''"
     if skip_duplicates:
         query += " AND duplicate_status != 'exact_duplicate'"
@@ -1419,12 +1447,17 @@ def cmd_apply_rename(skip_duplicates: bool, execute: bool) -> None:
             "SELECT COUNT(*) c FROM catalogue WHERE is_repo_rollup = 0 AND duplicate_status = 'exact_duplicate'"
         ).fetchone()["c"]
 
+    layout_desc = ("literature/ split out, " if group_literature else "") + ("nested" if nested else "flat")
     if not execute:
         print(f"DRY RUN (no files written - pass --execute to actually copy): "
-              f"{len(rows)} files would be copied to {CATALOGUE_DIR.relative_to(ROOT_DIR)}/"
+              f"{len(rows)} files would be copied to {CATALOGUE_DIR.relative_to(ROOT_DIR)}/ ({layout_desc} layout)"
               + (f", {excluded_dupes} exact duplicates skipped" if skip_duplicates else "") + ".")
         for row in rows[:10]:
-            print(f"  {row['catalogue_id']}: {Path(row['source_path']).name} -> {row['proposed_filename']}")
+            dest_dir = apply_rename_dest_dir(row, nested, group_literature, source_roots)
+            rel = dest_dir.relative_to(CATALOGUE_DIR)
+            prefix = f"{rel}/" if str(rel) != "." else ""
+            print(f"  {row['catalogue_id']}: {Path(row['source_path']).name} -> "
+                  f"{prefix}{row['proposed_filename']}")
         if len(rows) > 10:
             print(f"  ... and {len(rows) - 10} more")
         conn.close()
@@ -1432,13 +1465,15 @@ def cmd_apply_rename(skip_duplicates: bool, execute: bool) -> None:
 
     copied, already_present = 0, 0
     for row in rows:
-        dest = CATALOGUE_DIR / row["proposed_filename"]
+        dest_dir = apply_rename_dest_dir(row, nested, group_literature, source_roots)
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / row["proposed_filename"]
         if dest.exists():
             already_present += 1
             continue
         shutil.copy2(row["source_path"], dest)
         meta = {k: row[k] for k in row.keys()}
-        (CATALOGUE_DIR / f"{row['proposed_filename']}.meta.json").write_text(
+        dest.with_name(f"{dest.name}.meta.json").write_text(
             json.dumps(meta, indent=2, default=str, ensure_ascii=False), encoding="utf-8"
         )
         conn.execute(
@@ -1449,7 +1484,8 @@ def cmd_apply_rename(skip_duplicates: bool, execute: bool) -> None:
 
     conn.commit()
     conn.close()
-    print(f"Pass 4 (apply-rename) complete: {copied} files copied, {already_present} already present, "
+    print(f"Pass 4 (apply-rename) complete: {copied} files copied ({layout_desc} layout), "
+          f"{already_present} already present, "
           + (f"{excluded_dupes} exact duplicates skipped. " if skip_duplicates else "")
           + "Source files untouched.")
 
@@ -1513,9 +1549,12 @@ def main() -> int:
     elif command == "rename-plan":
         cmd_rename_plan(env)
     elif command == "apply-rename":
-        skip_duplicates = "--skip-duplicates" in sys.argv[2:]
-        execute = "--execute" in sys.argv[2:]
-        cmd_apply_rename(skip_duplicates, execute)
+        args = sys.argv[2:]
+        skip_duplicates = "--skip-duplicates" in args
+        nested = "--nested" in args
+        group_literature = "--group-literature" in args
+        execute = "--execute" in args
+        cmd_apply_rename(env, skip_duplicates, nested, group_literature, execute)
     elif command == "export-jsonl":
         cmd_export_jsonl()
     elif command == "verify":
