@@ -29,7 +29,7 @@
     "source_path": { "type": "string" },
     "proposed_filename": {
       "type": "string",
-      "description": "Use the convention: <DATE>__<CLASS>__<ORGANISATION>__<SYSTEM>__<ARTEFACT>__<PRIMARY-ID>__v<NN>__<STATUS>__<ACCESS>.<ext>"
+      "description": "Use the convention: CLASS_ARTEFACT_PRIMARY-ID_DATE_vNN_STATUS_ACCESS_SLUG_ORGANISATION_SYSTEM_ORIGIN.ext, single underscore between tokens, entirely upper-case except the extension. Standardized/controlled-vocabulary tokens lead (quick to scan and group in a flat folder); descriptive/contextual tokens (what the file is about, company, source directory) trail."
     },
     "extension": { "type": "string" },
     "mime_type": { "type": ["string", "null"] },
@@ -100,7 +100,10 @@
       "description": "Short extracted or OCR'd preview of file content, capped at project_config.json -> preview_max_words words.",
       "maxLength": 6000
     },
-    "summary": { "type": ["string", "null"] },
+    "summary": {
+      "type": ["string", "null"],
+      "description": "Free-text, one-sentence human-readable context: document purpose (e.g. quote, gate pass), the system/platform that likely produced it, and any client/counterparty/business it concerns. Not constrained to project_config.json's organisation/system vocab and never used in proposed_filename - this is for a reader (e.g. in a research paper) to understand a record at a glance without decoding the filename."
+    },
     "keywords": { "type": "array", "items": { "type": "string" }, "default": [] },
     "access_classification": {
       "type": "string",

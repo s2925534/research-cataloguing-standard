@@ -21,6 +21,9 @@ Usage:
     python3 catalogue.py enrich        # Pass 2.5: embedded metadata + domain identifiers
     python3 catalogue.py duplicates    # group by hash, flag exact duplicates
     python3 catalogue.py group         # group by base filename (e.g. repeat report exports/downloads)
+    python3 catalogue.py context [N]   # AI: fill `summary` with document purpose/producing-system/
+                                        # counterparty context (costs 1 API call/record; not part of
+                                        # `all` - run explicitly; optional N caps it to a pilot batch)
     python3 catalogue.py rename-plan   # Pass 3: propose filenames, write rename_plan.csv (no renaming)
     python3 catalogue.py export-jsonl  # refresh catalogue_master.jsonl from the DB
     python3 catalogue.py verify        # data-integrity regression check (filename/path consistency)
@@ -1014,6 +1017,52 @@ def ai_suggest_slug(api_key: str, original_filename: str, file_class: str, artef
         return None
 
 
+def ai_suggest_context(api_key: str, original_filename: str, file_class: str, artefact_type: str,
+                        source_organisation: str | None, source_system: str | None,
+                        content_preview: str | None) -> str | None:
+    """Optional: ask an LLM for a one-sentence, human-readable description of
+    what a file is, which system likely produced it, and which client/
+    counterparty/business it concerns - the kind of context a filename or
+    controlled-vocab field alone can't carry (e.g. a freight quote generated
+    by a named platform for a named client). Free text, not constrained to
+    project_config.json's organisation/system list, and never written into
+    proposed_filename. Returns None on any failure so the pipeline never
+    depends on it."""
+    context = (content_preview or "")[:2000]
+    known = ", ".join(v for v in (source_organisation, source_system) if v) or "not determined"
+    prompt = (
+        f"Original filename: {original_filename}\n"
+        f"File category: {file_class} / {artefact_type}\n"
+        f"Already-known organisation/system (from a controlled vocabulary, may be incomplete): {known}\n"
+        f"Content preview: {context}\n\n"
+        "In one plain-English sentence (under 240 characters), describe: what kind of document "
+        "this is (e.g. quote, gate pass, job report, dataset export), which system or platform "
+        "most likely produced it (name it even if it isn't in the known list above; say 'unclear' "
+        "if you can't tell), and which client, counterparty or business entity it concerns or was "
+        "issued to, if identifiable. Only state what the filename/content actually supports - do "
+        "not invent names or figures. Reply with only the sentence, no markdown, no preamble."
+    )
+    payload = json.dumps({
+        "model": "gpt-4o-mini",
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0,
+        "max_tokens": 100,
+    }).encode("utf-8")
+    request = urllib.request.Request(
+        "https://api.openai.com/v1/chat/completions",
+        data=payload,
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20, context=_ssl_context()) as response:
+            result = json.loads(response.read())
+        text = result["choices"][0]["message"]["content"].strip()
+        return text[:300] or None
+    except (urllib.error.URLError, KeyError, IndexError, json.JSONDecodeError, TimeoutError):
+        return None
+
+
 def _ssl_context():
     """Uses certifi's CA bundle when available - the stock python.org macOS
     build doesn't install root certificates, which otherwise breaks HTTPS
@@ -1091,13 +1140,17 @@ def cmd_rename_plan(env: dict) -> None:
         slug_sources[source] += 1
         slug_part = slug or row["catalogue_id"]
 
-        base = f"{date_part}__{cls}__{org}__{system}__{artefact}__{primary_id}__{slug_part}__{origin}__v01__{status}__{access}"
+        # Class-led: standardized/controlled-vocabulary tokens first (quick to
+        # scan and group in a flat folder), descriptive/contextual tokens
+        # (what it's about, company, source directory) last. Single "_" between
+        # tokens, whole name upper-cased - only the extension stays as-is.
+        base = f"{cls}_{artefact}_{primary_id}_{date_part}_v01_{status}_{access}_{slug_part}_{org}_{system}_{origin}".upper()
         candidate = f"{base}.{ext}" if ext else base
 
         # Only genuine SHA-256-verified duplicates get a duplicate marker in the
         # filename; this is never used just to resolve name collisions.
         if row["duplicate_status"] == "exact_duplicate" and row["canonical_catalogue_id"]:
-            marker = f"__DUPOF-{row['canonical_catalogue_id']}"
+            marker = f"_DUPOF-{row['canonical_catalogue_id']}".upper()
             candidate = f"{base}{marker}.{ext}" if ext else f"{base}{marker}"
 
         slug_note = None if source in ("embedded_title",) else (
@@ -1226,6 +1279,52 @@ def cmd_verify() -> None:
         print(f"verify passed: {len(rows)} records, no filename/path integrity problems found.")
 
 
+def cmd_add_context(env: dict, limit: int | None = None) -> None:
+    """AI-assisted, opt-in (never part of `all`, since it costs one API call
+    per record): fills the free-text `summary` column with a one-sentence
+    description of document purpose / producing system / counterparty -
+    context that the controlled-vocabulary source_organisation/source_system
+    fields and the naming convention deliberately don't carry. Skips records
+    that already have a summary, so reruns only cover new/uncovered rows."""
+    api_key = env.get("OPENAI_API_KEY")
+    if not api_key:
+        print("No OPENAI_API_KEY set in instance/.env - skipping (context summaries require it).")
+        return
+
+    conn = get_db()
+    now = datetime.now(timezone.utc).isoformat()
+    query = (
+        "SELECT catalogue_id, original_filename, file_class, artefact_type, "
+        "source_organisation, source_system, content_preview FROM catalogue "
+        "WHERE is_repo_rollup = 0 AND (summary IS NULL OR summary = '') "
+        "ORDER BY catalogue_id"
+    )
+    rows = conn.execute(query).fetchall()
+    if limit:
+        rows = rows[:limit]
+
+    filled = 0
+    for row in rows:
+        summary = ai_suggest_context(
+            api_key, row["original_filename"], row["file_class"] or "", row["artefact_type"] or "",
+            row["source_organisation"], row["source_system"], row["content_preview"],
+        )
+        if summary:
+            conn.execute(
+                "UPDATE catalogue SET summary = ?, updated_at = ? WHERE catalogue_id = ?",
+                (summary, now, row["catalogue_id"]),
+            )
+            filled += 1
+        if filled % 50 == 0 and filled:
+            conn.commit()
+            print(f"  context filled {filled}/{len(rows)}...")
+
+    conn.commit()
+    conn.close()
+    print(f"Pass (context) complete: {filled}/{len(rows)} records given an AI-generated summary "
+          f"(skipped {len(rows) - filled} on API failure).")
+
+
 def cmd_stats() -> None:
     conn = get_db()
     total = conn.execute("SELECT COUNT(*) c FROM catalogue").fetchone()["c"]
@@ -1279,6 +1378,9 @@ def main() -> int:
         cmd_duplicates()
     elif command == "group":
         cmd_group_files()
+    elif command == "context":
+        limit = int(sys.argv[2]) if len(sys.argv) > 2 else None
+        cmd_add_context(env, limit)
     elif command == "rename-plan":
         cmd_rename_plan(env)
     elif command == "export-jsonl":
