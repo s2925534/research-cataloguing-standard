@@ -25,6 +25,11 @@ Usage:
                                         # counterparty context (costs 1 API call/record; not part of
                                         # `all` - run explicitly; optional N caps it to a pilot batch)
     python3 catalogue.py rename-plan   # Pass 3: propose filenames, write rename_plan.csv (no renaming)
+    python3 catalogue.py apply-rename [--skip-duplicates] [--execute]
+                                        # Pass 4: copy sources -> instance/catalogued_files/ under their
+                                        # proposed_filename + a .meta.json sidecar. Dry-run by default
+                                        # (prints the plan); nothing is written until --execute is passed.
+                                        # --skip-duplicates omits files flagged duplicate_status=exact_duplicate.
     python3 catalogue.py export-jsonl  # refresh catalogue_master.jsonl from the DB
     python3 catalogue.py verify        # data-integrity regression check (filename/path consistency)
     python3 catalogue.py all           # scan + extract + enrich + duplicates + group + rename-plan + export + verify + stats
@@ -38,6 +43,7 @@ import html
 import json
 import mimetypes
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -1388,6 +1394,62 @@ def cmd_add_context(env: dict, limit: int | None = None) -> None:
           f"(skipped {len(rows) - filled} on API failure).")
 
 
+def cmd_apply_rename(skip_duplicates: bool, execute: bool) -> None:
+    """Pass 4 (approved rename): copies each source file into
+    instance/catalogued_files/ under its proposed_filename, with a
+    <name>.meta.json sidecar carrying the full catalogue record. Never
+    renames, moves, or deletes the source - copy only. Always a conscious,
+    explicit action: not part of `all`, and dry-run (prints what it would do)
+    unless --execute is passed, so a plan can be reviewed before anything is
+    written to disk."""
+    conn = get_db()
+    now = datetime.now(timezone.utc).isoformat()
+    query = "SELECT * FROM catalogue WHERE is_repo_rollup = 0 AND proposed_filename IS NOT NULL AND proposed_filename != ''"
+    if skip_duplicates:
+        query += " AND duplicate_status != 'exact_duplicate'"
+    rows = conn.execute(query + " ORDER BY catalogue_id").fetchall()
+
+    excluded_dupes = 0
+    if skip_duplicates:
+        excluded_dupes = conn.execute(
+            "SELECT COUNT(*) c FROM catalogue WHERE is_repo_rollup = 0 AND duplicate_status = 'exact_duplicate'"
+        ).fetchone()["c"]
+
+    if not execute:
+        print(f"DRY RUN (no files written - pass --execute to actually copy): "
+              f"{len(rows)} files would be copied to {CATALOGUE_DIR.relative_to(ROOT_DIR)}/"
+              + (f", {excluded_dupes} exact duplicates skipped" if skip_duplicates else "") + ".")
+        for row in rows[:10]:
+            print(f"  {row['catalogue_id']}: {Path(row['source_path']).name} -> {row['proposed_filename']}")
+        if len(rows) > 10:
+            print(f"  ... and {len(rows) - 10} more")
+        conn.close()
+        return
+
+    copied, already_present = 0, 0
+    for row in rows:
+        dest = CATALOGUE_DIR / row["proposed_filename"]
+        if dest.exists():
+            already_present += 1
+            continue
+        shutil.copy2(row["source_path"], dest)
+        meta = {k: row[k] for k in row.keys()}
+        (CATALOGUE_DIR / f"{row['proposed_filename']}.meta.json").write_text(
+            json.dumps(meta, indent=2, default=str, ensure_ascii=False), encoding="utf-8"
+        )
+        conn.execute(
+            "UPDATE catalogue SET processing_status = 'renamed', updated_at = ? WHERE catalogue_id = ?",
+            (now, row["catalogue_id"]),
+        )
+        copied += 1
+
+    conn.commit()
+    conn.close()
+    print(f"Pass 4 (apply-rename) complete: {copied} files copied, {already_present} already present, "
+          + (f"{excluded_dupes} exact duplicates skipped. " if skip_duplicates else "")
+          + "Source files untouched.")
+
+
 def cmd_stats() -> None:
     conn = get_db()
     total = conn.execute("SELECT COUNT(*) c FROM catalogue").fetchone()["c"]
@@ -1446,6 +1508,10 @@ def main() -> int:
         cmd_add_context(env, limit)
     elif command == "rename-plan":
         cmd_rename_plan(env)
+    elif command == "apply-rename":
+        skip_duplicates = "--skip-duplicates" in sys.argv[2:]
+        execute = "--execute" in sys.argv[2:]
+        cmd_apply_rename(skip_duplicates, execute)
     elif command == "export-jsonl":
         cmd_export_jsonl()
     elif command == "verify":
