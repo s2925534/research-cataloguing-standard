@@ -7,6 +7,7 @@ and produces:
   - instance/catalogued_files/catalogue_master.jsonl  (append-only audit log)
   - instance/catalogued_files/duplicate_report.csv
   - instance/catalogued_files/rename_plan.csv          (PROPOSAL ONLY)
+  - instance/catalogued_files/human_review_queue.csv   (triage view, ranked)
 
 Never renames, moves, copies or deletes a source file. Pass 4 (approved
 rename) is a separate, explicit, human-approved step not implemented here.
@@ -32,6 +33,8 @@ Usage:
                                         # records match none, stored as "none" so reruns only cover
                                         # new records. Costs 1 API call/record; not part of `all`.
     python3 catalogue.py rename-plan   # Pass 3: propose filenames, write rename_plan.csv (no renaming)
+    python3 catalogue.py review-queue  # write human_review_queue.csv, ranked by why each record
+                                        # needs a look (duplicate flags, low confidence, undecided use)
     python3 catalogue.py apply-rename [--skip-duplicates] [--nested] [--group-literature] [--execute]
                                         # Pass 4: copy sources -> instance/catalogued_files/ under their
                                         # proposed_filename + a .meta.json sidecar. Dry-run by default
@@ -42,7 +45,7 @@ Usage:
                                         # out into catalogued_files/literature/ regardless of the other layout.
     python3 catalogue.py export-jsonl  # refresh catalogue_master.jsonl from the DB
     python3 catalogue.py verify        # data-integrity regression check (filename/path consistency)
-    python3 catalogue.py all           # scan + extract + enrich + duplicates + near-duplicates + group + rename-plan + export + verify + stats
+    python3 catalogue.py all           # scan + extract + enrich + duplicates + near-duplicates + group + rename-plan + review-queue + export + verify + stats
     python3 catalogue.py stats         # summary counts
 """
 from __future__ import annotations
@@ -1593,6 +1596,62 @@ def cmd_rename_plan(env: dict) -> None:
         f"Slug sources: {dict(slug_sources)}"
         + (f" (AI calls made: {ai_used})" if api_key else " (no OPENAI_API_KEY set, AI fallback skipped)")
     )
+REVIEW_QUEUE_PATH = CATALOGUE_DIR / "human_review_queue.csv"
+
+
+def cmd_review_queue() -> None:
+    """Triage report: human_review_required is 1 by default for every record
+    (nothing in this engine clears it), so it alone isn't a useful filter.
+    Instead this ranks records by *why* they need a look - exact/near
+    duplicates, low-confidence proposed filenames or metadata, an existing
+    review_notes flag, or a use_decision that's still undecided - so the top
+    of the CSV is what actually needs a human's time first, not just a full
+    dump of every record in catalogue_id order."""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT * FROM catalogue WHERE is_repo_rollup = 0 AND human_review_required = 1 ORDER BY catalogue_id"
+    ).fetchall()
+
+    queue_rows = []
+    for row in rows:
+        reasons = []
+        if row["duplicate_status"] == "exact_duplicate":
+            reasons.append(f"exact duplicate of {row['canonical_catalogue_id'] or 'unresolved canonical'}")
+        elif row["duplicate_status"] == "near_duplicate":
+            score = row["near_duplicate_score"]
+            score_txt = f"{score:.2f}" if score is not None else "unscored"
+            reasons.append(f"near duplicate (score {score_txt}) of {row['near_duplicate_canonical_id'] or 'unresolved canonical'}")
+        if row["rename_confidence"] is not None and row["rename_confidence"] < 0.6:
+            reasons.append(f"low-confidence proposed filename ({row['rename_confidence']:.2f})")
+        if row["metadata_confidence"] is not None and row["metadata_confidence"] < 0.6:
+            reasons.append(f"low-confidence metadata ({row['metadata_confidence']:.2f})")
+        if row["review_notes"]:
+            reasons.append(row["review_notes"])
+        # Weakest signal last: every unprocessed record starts 'undecided', so
+        # this only tips the sort order, never the only reason shown alone
+        # unless nothing else flagged the record.
+        if row["use_decision"] == "undecided":
+            reasons.append("use decision not yet made")
+
+        queue_rows.append((
+            len(reasons), row["catalogue_id"], " | ".join(reasons), row["file_class"], row["artefact_type"],
+            row["short_title"] or "", row["summary"] or "", row["duplicate_status"], row["rename_confidence"],
+            row["use_decision"], row["original_filename"], row["proposed_filename"] or "", row["source_path"],
+        ))
+
+    # Most reasons first (most urgent triage), catalogue_id as tiebreaker.
+    queue_rows.sort(key=lambda r: (-r[0], r[1]))
+
+    conn.close()
+
+    with REVIEW_QUEUE_PATH.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(["catalogue_id", "review_reasons", "file_class", "artefact_type", "short_title", "summary",
+                         "duplicate_status", "rename_confidence", "use_decision", "original_filename",
+                         "proposed_filename", "source_path"])
+        writer.writerows(r[1:] for r in queue_rows)
+
+    print(f"Review queue: {len(queue_rows)} records -> {REVIEW_QUEUE_PATH.name}")
 
 
 # --------------------------------------------------------------------------
@@ -1931,6 +1990,8 @@ def main() -> int:
         cmd_classify_evidence(env, project_config, limit)
     elif command == "rename-plan":
         cmd_rename_plan(env)
+    elif command == "review-queue":
+        cmd_review_queue()
     elif command == "apply-rename":
         args = sys.argv[2:]
         skip_duplicates = "--skip-duplicates" in args
@@ -1952,6 +2013,7 @@ def main() -> int:
         cmd_near_duplicates()
         cmd_group_files()
         cmd_rename_plan(env)
+        cmd_review_queue()
         cmd_export_jsonl()
         cmd_verify()
         cmd_stats()

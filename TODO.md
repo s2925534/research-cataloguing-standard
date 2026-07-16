@@ -19,14 +19,17 @@
 
 ## Catalogue viewer
 
-- [ ] Build `catalog.html` — static page that renders `catalogue_master.jsonl`/
-      a `catalog.json` export as a browsable/searchable table.
-- [ ] Add JS that polls/reloads the catalogue JSON so the page always reflects
-      the latest data on disk without a manual rebuild.
+- [x] Build `catalog.html` — static page that renders `catalogue_master.jsonl`/
+      a `catalog.json` export as a browsable/searchable table. (`templates/catalog.html`,
+      scaffolded next to `catalogue_master.jsonl` by `setup.py`; needs `python3 -m
+      http.server` in that folder since browsers block `fetch()` of `file://` URLs)
+- [x] Add JS that polls/reloads the catalogue JSON so the page always reflects
+      the latest data on disk without a manual rebuild. (re-fetches every 5s)
 
 ## Engine
 
-- [ ] Add a `human_review_queue.csv` triage view/report.
+- [x] Add a `human_review_queue.csv` triage view/report. (`catalogue.py review-queue`,
+      ranks records by why they need a look, not just a dump of every record)
 - [ ] Add lightweight tests for `setup.py` (config validation, schema merge).
 - [ ] Consider validating generated catalogue records against
       `schema.generated.json` (e.g. via `jsonschema` package) as part of Pass 2.

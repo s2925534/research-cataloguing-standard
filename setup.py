@@ -19,6 +19,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -195,6 +196,15 @@ def scaffold_output(env: dict, project_config: dict, csv_header: str) -> list[Pa
         else:
             target.touch()
         created.append(target)
+
+    # catalog.html is a static viewer, not a generated data file - copy the
+    # reusable template so it sits next to catalogue_master.jsonl (which it
+    # loads via a relative fetch()) and stays in sync if the template changes.
+    viewer_src = TEMPLATES_DIR / "catalog.html"
+    viewer_dest = catalogue_dir / "catalog.html"
+    if viewer_src.exists():
+        shutil.copyfile(viewer_src, viewer_dest)
+        created.append(viewer_dest)
 
     return created
 

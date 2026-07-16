@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Research Catalogue Viewer</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --bg: #f7f7f8; --panel: #fff; --border: #e1e1e6; --text: #1c1c1f;
+    --muted: #6b6b76; --accent: #2554c7; --review: #b8860b; --review-bg: #fff8e6;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: var(--bg); color: var(--text);
+  }
+  header {
+    padding: 14px 20px; background: var(--panel); border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap; position: sticky; top: 0; z-index: 2;
+  }
+  header h1 { font-size: 16px; margin: 0; white-space: nowrap; }
+  #status { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  #search {
+    flex: 1; min-width: 200px; padding: 7px 10px; border: 1px solid var(--border);
+    border-radius: 6px; font-size: 13px;
+  }
+  select, button {
+    padding: 7px 10px; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--panel); font-size: 13px; cursor: pointer;
+  }
+  #count { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  #error {
+    display: none; margin: 12px 20px; padding: 10px 14px; background: #fdecea;
+    border: 1px solid #f3b4ae; border-radius: 6px; color: #8a2318; font-size: 13px; white-space: pre-wrap;
+  }
+  main { padding: 0 20px 40px; overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; background: var(--panel); font-size: 12.5px; }
+  th, td {
+    border-bottom: 1px solid var(--border); padding: 6px 10px; text-align: left;
+    max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  th {
+    position: sticky; top: 53px; background: #eef0f4; cursor: pointer; user-select: none;
+    white-space: nowrap; z-index: 1;
+  }
+  th:hover { background: #e3e6ee; }
+  th .arrow { color: var(--accent); font-size: 10px; margin-left: 3px; }
+  tbody tr { cursor: pointer; }
+  tbody tr:hover { background: #f0f3fa; }
+  tbody tr.review { background: var(--review-bg); }
+  tbody tr.review:hover { background: #fdf1cf; }
+  td.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .badge {
+    display: inline-block; padding: 1px 6px; border-radius: 10px; font-size: 11px;
+    background: #eef0f4; color: var(--muted);
+  }
+  .badge.review { background: var(--review); color: #fff; }
+  tr.detail td {
+    white-space: normal; max-width: none; background: #fbfbfc; padding: 14px 18px;
+  }
+  tr.detail pre {
+    margin: 0; white-space: pre-wrap; word-break: break-word; font-size: 12px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  #empty { padding: 40px; text-align: center; color: var(--muted); display: none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Research Catalogue</h1>
+  <input id="search" type="search" placeholder="Search all fields (catalogue_id, filename, summary, organisation...)">
+  <select id="reviewFilter">
+    <option value="">All records</option>
+    <option value="review">Human review required</option>
+    <option value="dupes">Duplicates only</option>
+  </select>
+  <span id="count"></span>
+  <span id="status">loading...</span>
+</header>
+<div id="error"></div>
+<main>
+  <table id="tbl">
+    <thead><tr id="headRow"></tr></thead>
+    <tbody id="body"></tbody>
+  </table>
+  <div id="empty">No records match the current search/filter.</div>
+</main>
+<script>
+(function () {
+  "use strict";
+
+  // Columns shown in the summary table. Every field the record has is still
+  // available in the expandable detail row (click any row) - this list is
+  // just what's worth a fixed-width column at a glance.
+  var COLUMNS = [
+    "catalogue_id", "file_class", "artefact_type", "short_title", "summary",
+    "source_organisation", "source_system", "document_date",
+    "evidence_source_type", "human_review_required", "use_decision",
+    "original_filename", "proposed_filename"
+  ];
+
+  var DATA_URL = "catalogue_master.jsonl";
+  var POLL_MS = 5000;
+
+  var state = { rows: [], sortKey: "catalogue_id", sortDir: 1, lastRaw: "" };
+
+  var els = {
+    status: document.getElementById("status"),
+    error: document.getElementById("error"),
+    search: document.getElementById("search"),
+    reviewFilter: document.getElementById("reviewFilter"),
+    count: document.getElementById("count"),
+    headRow: document.getElementById("headRow"),
+    body: document.getElementById("body"),
+    empty: document.getElementById("empty"),
+  };
+
+  function parseJsonl(text) {
+    var rows = [];
+    var lines = text.split("\n");
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i].trim();
+      if (!line) continue;
+      try { rows.push(JSON.parse(line)); }
+      catch (e) { /* skip a malformed line rather than failing the whole load */ }
+    }
+    return rows;
+  }
+
+  function fmtCell(v) {
+    if (v === null || v === undefined || v === "") return "";
+    if (Array.isArray(v)) return v.length ? v.join(", ") : "";
+    if (typeof v === "object") return Object.keys(v).length ? JSON.stringify(v) : "";
+    if (typeof v === "boolean") return v ? "yes" : "";
+    return String(v);
+  }
+
+  function buildHead() {
+    els.headRow.innerHTML = "";
+    COLUMNS.forEach(function (col) {
+      var th = document.createElement("th");
+      th.textContent = col;
+      th.dataset.col = col;
+      th.addEventListener("click", function () {
+        if (state.sortKey === col) { state.sortDir *= -1; }
+        else { state.sortKey = col; state.sortDir = 1; }
+        render();
+      });
+      els.headRow.appendChild(th);
+    });
+    updateSortArrows();
+  }
+
+  function updateSortArrows() {
+    Array.prototype.forEach.call(els.headRow.children, function (th) {
+      var base = th.dataset.col;
+      th.textContent = base;
+      if (base === state.sortKey) {
+        var arrow = document.createElement("span");
+        arrow.className = "arrow";
+        arrow.textContent = state.sortDir === 1 ? "▲" : "▼";
+        th.appendChild(arrow);
+      }
+    });
+  }
+
+  function matchesSearch(row, needle) {
+    if (!needle) return true;
+    for (var key in row) {
+      var v = row[key];
+      if (v === null || v === undefined) continue;
+      var s = typeof v === "object" ? JSON.stringify(v) : String(v);
+      if (s.toLowerCase().indexOf(needle) !== -1) return true;
+    }
+    return false;
+  }
+
+  function filteredSorted() {
+    var needle = els.search.value.trim().toLowerCase();
+    var mode = els.reviewFilter.value;
+    var rows = state.rows.filter(function (r) {
+      if (mode === "review" && !r.human_review_required) return false;
+      if (mode === "dupes" && r.duplicate_status !== "exact_duplicate" && r.near_duplicate_group_id == null) return false;
+      return matchesSearch(r, needle);
+    });
+    var key = state.sortKey, dir = state.sortDir;
+    rows.sort(function (a, b) {
+      var av = a[key], bv = b[key];
+      if (av === null || av === undefined) av = "";
+      if (bv === null || bv === undefined) bv = "";
+      if (av < bv) return -1 * dir;
+      if (av > bv) return 1 * dir;
+      return 0;
+    });
+    return rows;
+  }
+
+  function toggleDetail(tr, row) {
+    var next = tr.nextElementSibling;
+    if (next && next.classList.contains("detail")) { next.remove(); return; }
+    var existing = els.body.querySelector("tr.detail");
+    if (existing) existing.remove();
+    var detailTr = document.createElement("tr");
+    detailTr.className = "detail";
+    var td = document.createElement("td");
+    td.colSpan = COLUMNS.length;
+    var pre = document.createElement("pre");
+    pre.textContent = JSON.stringify(row, null, 2);
+    td.appendChild(pre);
+    detailTr.appendChild(td);
+    tr.after(detailTr);
+    detailTr.scrollIntoView({ block: "nearest" });
+  }
+
+  function render() {
+    updateSortArrows();
+    var rows = filteredSorted();
+    els.count.textContent = rows.length + " / " + state.rows.length + " records";
+    els.body.innerHTML = "";
+    els.empty.style.display = rows.length ? "none" : "block";
+    rows.forEach(function (row) {
+      var tr = document.createElement("tr");
+      if (row.human_review_required) tr.classList.add("review");
+      COLUMNS.forEach(function (col) {
+        var td = document.createElement("td");
+        if (col === "catalogue_id" || col === "original_filename" || col === "proposed_filename") {
+          td.className = "mono";
+        }
+        if (col === "human_review_required") {
+          if (row[col]) {
+            var b = document.createElement("span");
+            b.className = "badge review";
+            b.textContent = "review";
+            td.appendChild(b);
+          }
+        } else {
+          td.textContent = fmtCell(row[col]);
+          td.title = td.textContent;
+        }
+        tr.appendChild(td);
+      });
+      tr.addEventListener("click", function () { toggleDetail(tr, row); });
+      els.body.appendChild(tr);
+    });
+  }
+
+  function showError(msg) {
+    els.error.textContent = msg;
+    els.error.style.display = "block";
+  }
+
+  function load(isPoll) {
+    fetch(DATA_URL, { cache: "no-store" })
+      .then(function (resp) {
+        if (!resp.ok) throw new Error("HTTP " + resp.status + " fetching " + DATA_URL);
+        return resp.text();
+      })
+      .then(function (text) {
+        els.error.style.display = "none";
+        if (text === state.lastRaw) {
+          els.status.textContent = "up to date (" + new Date().toLocaleTimeString() + ")";
+          return;
+        }
+        state.lastRaw = text;
+        state.rows = parseJsonl(text);
+        els.status.textContent = "loaded " + state.rows.length + " records (" + new Date().toLocaleTimeString() + ")";
+        render();
+      })
+      .catch(function (err) {
+        els.status.textContent = "load failed";
+        if (!isPoll) {
+          showError(
+            "Could not load " + DATA_URL + ": " + err.message + "\n\n" +
+            "This page must be served over http(s), not opened directly as a file:// URL " +
+            "(browsers block fetch() of local files). From the folder containing this file " +
+            "and catalogue_master.jsonl, run:\n\n  python3 -m http.server 8000\n\n" +
+            "then open http://localhost:8000/catalog.html"
+          );
+        }
+      });
+  }
+
+  buildHead();
+  els.search.addEventListener("input", render);
+  els.reviewFilter.addEventListener("change", render);
+  load(false);
+  setInterval(function () { load(true); }, POLL_MS);
+})();
+</script>
+</body>
+</html>
