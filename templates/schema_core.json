@@ -65,9 +65,9 @@
     "source_url": { "type": ["string", "null"] },
     "apa7_citation": { "type": ["string", "null"] },
     "primary_entity_type": {
-      "type": "string",
-      "enum": ["container", "booking", "job", "shipment", "vessel", "actor", "document", "event", "dataset", "framework_component", "meeting", "standard", "publication", "multi", "none", "unknown"],
-      "description": "Generic entity kinds. Add project-specific entity kinds via project_config.json -> extended_entity_types if needed."
+      "type": ["string", "null"],
+      "enum": ["container", "booking", "job", "shipment", "vessel", "actor", "document", "event", "dataset", "framework_component", "meeting", "standard", "publication", "multi", "none", "unknown", null],
+      "description": "Generic entity kinds, null until classified. Add project-specific entity kinds via project_config.json -> extended_entity_types if needed."
     },
     "primary_entity_id": { "type": ["string", "null"] },
     "secondary_entity_ids": { "type": "array", "items": { "type": "string" }, "default": [] },
@@ -87,8 +87,9 @@
     "document_sections": { "type": "array", "items": { "type": "string" }, "default": [] },
     "claim_ids": { "type": "array", "items": { "type": "string" }, "default": [] },
     "evidence_role": {
-      "type": "string",
-      "enum": ["primary_operational_evidence", "supporting_operational_evidence", "external_standard", "academic_foundation", "methodological_guidance", "validation_evidence", "illustrative_only", "contextual_only", "excluded", "unassigned"]
+      "type": ["string", "null"],
+      "enum": ["primary_operational_evidence", "supporting_operational_evidence", "external_standard", "academic_foundation", "methodological_guidance", "validation_evidence", "illustrative_only", "contextual_only", "excluded", "unassigned", null],
+      "description": "Not yet assigned by any pass in this engine - null until a human or a future pass sets it."
     },
     "evidence_status": {
       "type": "string",
@@ -126,7 +127,7 @@
     "parse_method": { "type": ["string", "null"] },
     "ocr_used": { "type": "boolean", "default": false },
     "rename_confidence": { "type": "number", "minimum": 0, "maximum": 1 },
-    "metadata_confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "metadata_confidence": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
     "human_review_required": { "type": "boolean" },
     "review_notes": { "type": ["string", "null"] },
     "duplicate_status": {

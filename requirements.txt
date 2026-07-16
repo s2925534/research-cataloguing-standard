@@ -1,0 +1,3 @@
+# Optional. Everything else in this project is Python standard library only.
+# Needed only for: python3 catalogue.py validate-schema
+jsonschema>=4

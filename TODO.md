@@ -33,8 +33,16 @@
 - [x] Add lightweight tests for `setup.py` (config validation, schema merge).
       (`tests/test_setup.py`, stdlib `unittest`, run via `python3 -m unittest
       discover tests`)
-- [ ] Consider validating generated catalogue records against
+- [x] Consider validating generated catalogue records against
       `schema.generated.json` (e.g. via `jsonschema` package) as part of Pass 2.
+      (`catalogue.py validate-schema`, optional dep in `requirements.txt`, not
+      part of `all`. First run found and fixed real schema/data drift: null
+      `primary_entity_type`/`evidence_role`/`metadata_confidence` weren't
+      permitted by the schema even though the pipeline leaves them null until
+      classified; `source_organisation`/`source_system` enums didn't include
+      null; `content_preview` had no hard character cap backing its
+      `maxLength`, so dense/binary content could exceed it - now enforced in
+      `cap_words()`.)
 - [x] Add a `summary` column (short one-line description of what the file is
       about, already AI-generated via `catalogue.py context`) to
       `rename_plan.csv`, positioned to the right of `catalogue_id`. No new AI

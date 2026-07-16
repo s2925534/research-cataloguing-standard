@@ -77,18 +77,41 @@ python3 catalogue.py scan          # Pass 1: walk SOURCE_DATA_ROOTS, hash + inve
                                     # non-zip file; known cloned spec/code repos are catalogued
                                     # as one rollup record each rather than per file
 python3 catalogue.py extract       # Pass 2: text/OCR content preview + heuristic classification
+python3 catalogue.py enrich        # Pass 2.5: embedded metadata + domain identifiers
 python3 catalogue.py duplicates    # group by sha256, flag exact duplicates for later deletion
+python3 catalogue.py near-duplicates # content-similarity match, flag near_duplicate
+python3 catalogue.py group         # group repeat report exports/downloads by base filename
 python3 catalogue.py rename-plan   # Pass 3: PROPOSE filenames -> instance/catalogued_files/rename_plan.csv
+python3 catalogue.py review-queue  # write human_review_queue.csv, ranked by why each record needs a look
 python3 catalogue.py export-jsonl  # refresh instance/catalogued_files/catalogue_master.jsonl from the DB
+python3 catalogue.py validate-schema # optional (needs `pip install -r requirements.txt`): validate every
+                                    # record against instance/schema.generated.json
+python3 catalogue.py verify        # data-integrity regression check
 python3 catalogue.py stats         # summary counts
-python3 catalogue.py all           # runs all of the above in order
+python3 catalogue.py all           # scan..review-queue..export..verify..stats, in order
 ```
 
-It never renames, moves, copies or deletes a source file. Pass 4 (approved
-rename into `instance/catalogued_files/`) is a deliberately separate, human-
-approved step, not implemented yet — see `TODO.md`. Everything from this
-first automated pass is written with `human_review_required = 1` and low
+It never renames, moves, copies or deletes a source file. Pass 4 (approved,
+human-triggered rename into `instance/catalogued_files/`) is a separate,
+explicit step:
+
+```
+python3 catalogue.py apply-rename                    # dry run: prints the plan, writes nothing
+python3 catalogue.py apply-rename --execute           # copies sources -> instance/catalogued_files/
+                                                        # + a <name>.meta.json sidecar per file
+```
+
+`--skip-duplicates` omits files flagged `duplicate_status=exact_duplicate`;
+`--nested` mirrors each file's original source subdirectory instead of the
+default flat layout; `--group-literature` carves `LIT` records into their
+own `literature/` subfolder regardless of layout. Everything from the
+automated passes is written with `human_review_required = 1` and low
 `rename_confidence`; treat it as triage, not a finished catalogue.
+
+Open `instance/catalogued_files/catalog.html` (scaffolded by `setup.py`) in
+a browser for a searchable/sortable table view of the catalogue - it needs
+to be served over http, not opened as a `file://` URL, e.g. `python3 -m
+http.server` from that folder.
 
 ## Key principle (unchanged from the original standard)
 

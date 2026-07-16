@@ -44,6 +44,10 @@ Usage:
                                         # of the default flat layout. --group-literature carves LIT records
                                         # out into catalogued_files/literature/ regardless of the other layout.
     python3 catalogue.py export-jsonl  # refresh catalogue_master.jsonl from the DB
+    python3 catalogue.py validate-schema
+                                        # optional: validate every record against instance/schema.generated.json
+                                        # (needs `pip install jsonschema` - see requirements.txt; not part of
+                                        # `all`), writes schema_validation_report.csv
     python3 catalogue.py verify        # data-integrity regression check (filename/path consistency)
     python3 catalogue.py all           # scan + extract + enrich + duplicates + near-duplicates + group + rename-plan + review-queue + export + verify + stats
     python3 catalogue.py stats         # summary counts
@@ -491,9 +495,17 @@ def scan_repos(conn, project_config, env, padding, ingest_date, now, known_repo_
 # Pass 2: content extraction
 # --------------------------------------------------------------------------
 
+# Mirrors schema_core.json -> properties.content_preview.maxLength: a word
+# cap alone doesn't bound character count (dot-leader tables of contents,
+# CSV rows, and other punctuation-dense text can pack far more than typical
+# prose into the same word count), so enforce a matching hard char ceiling
+# here too rather than relying on schema validation to just catch it later.
+CONTENT_PREVIEW_MAX_CHARS = 6000
+
+
 def cap_words(text: str, max_words: int) -> str:
     words = text.split()
-    return " ".join(words[:max_words])
+    return " ".join(words[:max_words])[:CONTENT_PREVIEW_MAX_CHARS]
 
 
 def extract_pdf(path: Path) -> tuple[str | None, str, bool]:
@@ -1662,25 +1674,94 @@ ARRAY_FIELDS = ["authors", "secondary_entity_ids", "source_fields", "document_se
 OBJECT_FIELDS = ["domain_identifiers", "research_taxonomy"]
 
 
+def row_to_record(row: sqlite3.Row) -> dict:
+    """Shared by export-jsonl and validate-schema: expand a raw DB row into
+    the same JSON-shaped record catalogue_master.jsonl writes (arrays/objects
+    parsed out of their _json columns, booleans as real bools)."""
+    record = dict(row)
+    for field in ARRAY_FIELDS:
+        record[field] = json.loads(record.pop(f"{field}_json", "[]") or "[]")
+    for field in OBJECT_FIELDS:
+        record[field] = json.loads(record.pop(f"{field}_json", "{}") or "{}")
+    record.pop("repo_extension_breakdown_json", None) if not record.get("is_repo_rollup") else None
+    if record.get("repo_extension_breakdown_json"):
+        record["repo_extension_breakdown"] = json.loads(record.pop("repo_extension_breakdown_json"))
+    for bool_field in ("contains_personal_data", "contains_commercially_sensitive_data",
+                       "ocr_used", "human_review_required", "is_repo_rollup"):
+        record[bool_field] = bool(record[bool_field])
+    return record
+
+
 def cmd_export_jsonl() -> None:
     conn = get_db()
     rows = conn.execute("SELECT * FROM catalogue ORDER BY catalogue_id").fetchall()
     with JSONL_PATH.open("w", encoding="utf-8") as fh:
         for row in rows:
-            record = dict(row)
-            for field in ARRAY_FIELDS:
-                record[field] = json.loads(record.pop(f"{field}_json", "[]") or "[]")
-            for field in OBJECT_FIELDS:
-                record[field] = json.loads(record.pop(f"{field}_json", "{}") or "{}")
-            record.pop("repo_extension_breakdown_json", None) if not record.get("is_repo_rollup") else None
-            if record.get("repo_extension_breakdown_json"):
-                record["repo_extension_breakdown"] = json.loads(record.pop("repo_extension_breakdown_json"))
-            for bool_field in ("contains_personal_data", "contains_commercially_sensitive_data",
-                               "ocr_used", "human_review_required", "is_repo_rollup"):
-                record[bool_field] = bool(record[bool_field])
-            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+            fh.write(json.dumps(row_to_record(row), ensure_ascii=False) + "\n")
     conn.close()
     print(f"Exported {len(rows)} records -> {JSONL_PATH.relative_to(ROOT_DIR)}")
+
+
+SCHEMA_VALIDATION_REPORT_PATH = CATALOGUE_DIR / "schema_validation_report.csv"
+
+
+def cmd_validate_schema() -> None:
+    """Validates every non-rollup record against instance/schema.generated.json
+    (produced by setup.py). Optional: needs the `jsonschema` package
+    (see requirements.txt); skips with a clear message rather than failing
+    if it isn't installed, since nothing else in this engine has a hard
+    dependency beyond the standard library.
+
+    Repo-rollup records (is_repo_rollup=1) and DB-only bookkeeping columns
+    (is_repo_rollup, repo_file_count, repo_total_size_bytes,
+    repo_extension_breakdown) are out of scope: schema.generated.json models
+    one citable file record, not the repo-aggregate bookkeeping this engine
+    also stores."""
+    try:
+        import jsonschema
+    except ImportError:
+        print(
+            "jsonschema not installed - skipping schema validation. "
+            "Run: pip install -r requirements.txt (or `pip install jsonschema`)."
+        )
+        return
+
+    schema_path = INSTANCE_DIR / "schema.generated.json"
+    if not schema_path.exists():
+        print(f"{schema_path.relative_to(ROOT_DIR)} not found - run `python3 setup.py` first.")
+        return
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    schema_props = set(schema.get("properties", {}).keys())
+    validator = jsonschema.Draft202012Validator(schema)
+
+    conn = get_db()
+    rows = conn.execute("SELECT * FROM catalogue WHERE is_repo_rollup = 0 ORDER BY catalogue_id").fetchall()
+    conn.close()
+
+    violations = []
+    for row in rows:
+        record = row_to_record(row)
+        # Only the fields schema.generated.json actually models - repo/DB
+        # bookkeeping columns aren't part of the published record shape.
+        record = {k: v for k, v in record.items() if k in schema_props}
+        for error in validator.iter_errors(record):
+            path = "/".join(str(p) for p in error.path) or "(root)"
+            violations.append((row["catalogue_id"], path, error.message))
+
+    with SCHEMA_VALIDATION_REPORT_PATH.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(["catalogue_id", "field", "error"])
+        writer.writerows(violations)
+
+    if violations:
+        by_field = Counter(v[1] for v in violations)
+        print(
+            f"Schema validation: {len(violations)} violations across "
+            f"{len(set(v[0] for v in violations))}/{len(rows)} records -> "
+            f"{SCHEMA_VALIDATION_REPORT_PATH.name}. Top fields: {dict(by_field.most_common(5))}"
+        )
+    else:
+        print(f"Schema validation: {len(rows)} records all conform to {schema_path.name}. No violations.")
 
 
 def cmd_verify() -> None:
@@ -2001,6 +2082,8 @@ def main() -> int:
         cmd_apply_rename(env, skip_duplicates, nested, group_literature, execute)
     elif command == "export-jsonl":
         cmd_export_jsonl()
+    elif command == "validate-schema":
+        cmd_validate_schema()
     elif command == "verify":
         cmd_verify()
     elif command == "stats":

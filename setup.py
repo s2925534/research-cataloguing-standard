@@ -127,11 +127,15 @@ def generate_schema(schema_core: dict, vocab_core: dict, project_config: dict) -
     schema = json.loads(json.dumps(schema_core))  # deep copy
     props = schema["properties"]
 
+    # None appended (not part of the sort) because source_organisation/
+    # source_system's "type" already allows null for not-yet-classified
+    # records - the enum list must include null too, or every legitimately
+    # unset record fails validation even though the type says it's allowed.
     organisations = sorted(set(project_config.get("organisations", [])) | {vocab_core["unknown_value"]})
-    props["source_organisation"]["enum"] = organisations
+    props["source_organisation"]["enum"] = organisations + [None]
 
     systems = sorted(set(project_config.get("systems", [])) | {"NA", vocab_core["unknown_value"]})
-    props["source_system"]["enum"] = systems
+    props["source_system"]["enum"] = systems + [None]
 
     artefact_types = sorted(
         set(vocab_core.get("core_artefact_types", [])) | set(project_config.get("extended_artefact_types", []))
