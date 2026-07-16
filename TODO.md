@@ -1,19 +1,21 @@
 # TODO
 
-## Cataloguing pipeline (not started yet)
+## Cataloguing pipeline (implemented)
 
-- [ ] Pass 1 — inventory scan of `_ResearchData`: walk `SOURCE_DATA_ROOTS`, record
+- [x] Pass 1 — inventory scan of `_ResearchData`: walk `SOURCE_DATA_ROOTS`, record
       `original_filename`/`source_path`, compute hashes, detect exact duplicates,
       write `instance/catalogued_files/catalogue_master.jsonl` / `.csv` / `duplicate_report.csv`.
-- [ ] Pass 2 — content extraction: text extraction (PDF/DOCX/CSV/MD/EML/XLSX) plus
+      (`catalogue.py scan`)
+- [x] Pass 2 — content extraction: text extraction (PDF/DOCX/CSV/MD/EML/XLSX) plus
       OCR fallback for images/screenshots (`OCR_ENABLED=true`), populate
       `content_preview` (capped at `preview_max_words`), dates, organisation/system,
-      domain identifiers, research taxonomy tags.
-- [ ] Pass 3 — rename proposal: generate `proposed_filename` per the naming
+      domain identifiers, research taxonomy tags. (`catalogue.py extract` + `enrich`)
+- [x] Pass 3 — rename proposal: generate `proposed_filename` per the naming
       convention, detect same-name collisions, flag likely duplicates for review
-      rather than auto-deleting.
-- [ ] Pass 4 — approved rename: copy files into `instance/catalogued_files/`,
+      rather than auto-deleting. (`catalogue.py rename-plan`)
+- [x] Pass 4 — approved rename: copy files into `instance/catalogued_files/`,
       write `<name>.meta.json` sidecars, never touch the immutable source.
+      (`catalogue.py apply-rename --execute`)
 
 ## Catalogue viewer
 
