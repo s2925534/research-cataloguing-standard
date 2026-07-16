@@ -20,6 +20,7 @@ Usage:
     python3 catalogue.py extract       # Pass 2: content preview + heuristic classification
     python3 catalogue.py enrich        # Pass 2.5: embedded metadata + domain identifiers
     python3 catalogue.py duplicates    # group by hash, flag exact duplicates
+    python3 catalogue.py near-duplicates # content-similarity match (not just hash/size), flag near_duplicate
     python3 catalogue.py group         # group by base filename (e.g. repeat report exports/downloads)
     python3 catalogue.py context [N]   # AI: fill `summary` with document purpose/producing-system/
                                         # counterparty context (costs 1 API call/record; not part of
@@ -35,12 +36,13 @@ Usage:
                                         # out into catalogued_files/literature/ regardless of the other layout.
     python3 catalogue.py export-jsonl  # refresh catalogue_master.jsonl from the DB
     python3 catalogue.py verify        # data-integrity regression check (filename/path consistency)
-    python3 catalogue.py all           # scan + extract + enrich + duplicates + group + rename-plan + export + verify + stats
+    python3 catalogue.py all           # scan + extract + enrich + duplicates + near-duplicates + group + rename-plan + export + verify + stats
     python3 catalogue.py stats         # summary counts
 """
 from __future__ import annotations
 
 import csv
+import difflib
 import hashlib
 import html
 import json
@@ -233,6 +235,9 @@ CREATE TABLE IF NOT EXISTS catalogue (
     canonical_catalogue_id TEXT,
     supersedes_catalogue_id TEXT,
     source_group_id TEXT,
+    near_duplicate_group_id TEXT,
+    near_duplicate_canonical_id TEXT,
+    near_duplicate_score REAL,
     use_decision TEXT DEFAULT 'undecided',
     reason_for_use_decision TEXT,
     retention_class TEXT DEFAULT 'review_required',
@@ -265,10 +270,17 @@ def get_db() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA_SQL)
     existing_cols = {row["name"] for row in conn.execute("PRAGMA table_info(catalogue)")}
-    if "source_group_id" not in existing_cols:
-        conn.execute("ALTER TABLE catalogue ADD COLUMN source_group_id TEXT")
-        conn.commit()
+    for column, coltype in (
+        ("source_group_id", "TEXT"),
+        ("near_duplicate_group_id", "TEXT"),
+        ("near_duplicate_canonical_id", "TEXT"),
+        ("near_duplicate_score", "REAL"),
+    ):
+        if column not in existing_cols:
+            conn.execute(f"ALTER TABLE catalogue ADD COLUMN {column} {coltype}")
+            conn.commit()
     conn.execute("CREATE INDEX IF NOT EXISTS idx_catalogue_source_group_id ON catalogue(source_group_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_catalogue_near_duplicate_group_id ON catalogue(near_duplicate_group_id)")
     conn.commit()
     return conn
 
@@ -943,6 +955,91 @@ def cmd_duplicates() -> None:
           f"{rows_written} rows -> {DUPLICATE_REPORT_PATH.name}")
 
 
+NEAR_DUPLICATE_SIMILARITY_THRESHOLD = 0.92
+NEAR_DUPLICATE_MAX_SIZE_RATIO = 3.0  # skip pairs whose sizes differ by more than this before comparing content
+
+
+def cmd_near_duplicates() -> None:
+    """Exact SHA-256 matching (cmd_duplicates) only catches byte-identical
+    files. This catches near-duplicates it can't: two files with almost the
+    same content but not identical (re-exported, retyped, minor edits).
+    Compares content_preview, which is already the full extracted text for
+    short files and just the first preview_max_words for long ones - the
+    same field naturally gives "full content" vs "initial content" behavior
+    without a separate extraction path. Uses difflib's similarity ratio with
+    a threshold below 1.0 as the margin for discrepancy, so near-identical
+    (not just byte-identical) content still gets flagged.
+
+    Fully additive to duplicate_status/duplicate_group_id/canonical_catalogue_id
+    (the exact-hash fields) - uses its own near_duplicate_* columns so a
+    record that's simultaneously the canonical of a hash group and a member
+    of a near-duplicate group doesn't have one relationship overwrite the
+    other. Only the non-canonical members of a near-duplicate group get
+    duplicate_status='near_duplicate'; already-exact_duplicate records are
+    excluded from consideration (that's already resolved, more precisely)."""
+    conn = get_db()
+    now = datetime.now(timezone.utc).isoformat()
+
+    rows = conn.execute(
+        "SELECT catalogue_id, file_class, extension, file_size_bytes, content_preview FROM catalogue "
+        "WHERE is_repo_rollup = 0 AND content_preview IS NOT NULL AND content_preview != '' "
+        "AND duplicate_status != 'exact_duplicate'"
+    ).fetchall()
+
+    buckets: dict[tuple, list] = {}
+    for row in rows:
+        buckets.setdefault((row["file_class"], row["extension"]), []).append(row)
+
+    groups_found, flagged = 0, 0
+    for bucket_rows in buckets.values():
+        n = len(bucket_rows)
+        matched: set[str] = set()
+        for i in range(n):
+            a = bucket_rows[i]
+            if a["catalogue_id"] in matched:
+                continue
+            a_text = a["content_preview"].lower()
+            size_a = a["file_size_bytes"] or 0
+            members = [(a, 1.0)]
+            for j in range(i + 1, n):
+                b = bucket_rows[j]
+                if b["catalogue_id"] in matched:
+                    continue
+                size_b = b["file_size_bytes"] or 0
+                if size_a and size_b and max(size_a, size_b) / max(min(size_a, size_b), 1) > NEAR_DUPLICATE_MAX_SIZE_RATIO:
+                    continue
+                sm = difflib.SequenceMatcher(None, a_text, b["content_preview"].lower(), autojunk=False)
+                if sm.quick_ratio() < NEAR_DUPLICATE_SIMILARITY_THRESHOLD:
+                    continue  # quick_ratio() is an upper bound on ratio(), safe to prune on
+                score = sm.ratio()
+                if score >= NEAR_DUPLICATE_SIMILARITY_THRESHOLD:
+                    members.append((b, score))
+
+            if len(members) > 1:
+                groups_found += 1
+                canonical = members[0][0]
+                group_id = f"nd-{canonical['catalogue_id']}"
+                for member, score in members:
+                    matched.add(member["catalogue_id"])
+                    conn.execute(
+                        "UPDATE catalogue SET near_duplicate_group_id = ?, near_duplicate_canonical_id = ?, "
+                        "near_duplicate_score = ?, updated_at = ? WHERE catalogue_id = ?",
+                        (group_id, canonical["catalogue_id"], score, now, member["catalogue_id"]),
+                    )
+                    if member["catalogue_id"] != canonical["catalogue_id"]:
+                        conn.execute(
+                            "UPDATE catalogue SET duplicate_status = 'near_duplicate', updated_at = ? "
+                            "WHERE catalogue_id = ? AND duplicate_status IN ('unresolved', 'unique')",
+                            (now, member["catalogue_id"]),
+                        )
+                        flagged += 1
+
+    conn.commit()
+    conn.close()
+    print(f"Near-duplicate detection complete: {groups_found} groups, {flagged} records flagged "
+          f"near_duplicate (threshold={NEAR_DUPLICATE_SIMILARITY_THRESHOLD}).")
+
+
 # --------------------------------------------------------------------------
 # Pass 3: rename proposal (no files touched)
 # --------------------------------------------------------------------------
@@ -1174,7 +1271,14 @@ def cmd_rename_plan(env: dict) -> None:
         org = safe_field(row["source_organisation"])
         system = safe_field(row["source_system"], "NA")
         artefact = safe_field(row["artefact_type"], "OTHER")
-        primary_id = row["primary_entity_id"] if row["primary_entity_id"] and row["primary_entity_id"] != "MULTI" else row["catalogue_id"]
+        # catalogue_id is a DB primary key, globally unique by construction -
+        # always include it (not just when there's no domain entity id) so
+        # proposed_filename can never collide, e.g. two different repeat-export
+        # files for the same container/date that the AI happens to describe
+        # with the same slug (domain entity id + date + slug alone isn't
+        # guaranteed unique).
+        domain_id = row["primary_entity_id"] if row["primary_entity_id"] and row["primary_entity_id"] != "MULTI" else None
+        primary_id = f"{domain_id}_{row['catalogue_id']}" if domain_id else row["catalogue_id"]
         ext = (row["extension"] or "").lstrip(".")
         status = "RAW"
         access = row["access_classification"] or "INTERNAL"
@@ -1541,6 +1645,8 @@ def main() -> int:
         cmd_enrich(project_config, env)
     elif command == "duplicates":
         cmd_duplicates()
+    elif command == "near-duplicates":
+        cmd_near_duplicates()
     elif command == "group":
         cmd_group_files()
     elif command == "context":
@@ -1566,6 +1672,7 @@ def main() -> int:
         cmd_extract(project_config)
         cmd_enrich(project_config, env)
         cmd_duplicates()
+        cmd_near_duplicates()
         cmd_group_files()
         cmd_rename_plan(env)
         cmd_export_jsonl()
