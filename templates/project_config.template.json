@@ -26,5 +26,31 @@
 
   "preview_max_words": 500,
 
-  "catalogue_id_prefix_padding": 5
+  "catalogue_id_prefix_padding": 5,
+
+  "cataloguing_rules": {
+    "_comment": "Consumed only by catalogue.py, never hardcoded there. Folder-name markers are substring-matched against each file's path relative to a SOURCE_DATA_ROOTS entry. All empty here by design - fill in for your project.",
+
+    "known_repo_dirs": {
+      "_comment": "folder name -> organisation code; catalogued as one rollup record instead of per-file",
+      "SOME-CLONED-SPEC-REPO": "SOME_ORG"
+    },
+
+    "dir_file_class_overrides": [
+      ["path/substring/marker", "LIT"]
+    ],
+
+    "dir_org_system": {
+      "path/substring/marker": ["SOME_ORG", "SOME_SYSTEM"]
+    },
+
+    "dir_system_only": [
+      ["path/substring/marker", "SOME_SYSTEM"]
+    ],
+
+    "domain_identifier_patterns": {
+      "_comment": "field name -> regex; field name should match (or map cleanly to) a schema_core.json primary_entity_type when singular, e.g. container_numbers -> container",
+      "some_identifier_numbers": "\\bYOUR-REGEX-HERE\\b"
+    }
+  }
 }

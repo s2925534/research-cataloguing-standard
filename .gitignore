@@ -1,6 +1,9 @@
 # OS / IDE
 .DS_Store
 .idea/
+.claude/
+__pycache__/
+*.pyc
 
 # This checkout's real config, generated schema, and cataloguing outputs.
 # templates/ holds the committed, reusable, project-agnostic versions instead.

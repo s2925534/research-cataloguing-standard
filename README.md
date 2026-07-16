@@ -42,9 +42,11 @@ setup.py      entry point: reads instance/, writes instance/
 - **`schema.generated.json`** — `templates/schema_core.json` with
   `project_config.json`'s values merged into its enums. Produced by
   `python3 setup.py`.
-- **`catalogued_files/`** (`catalogue_master.csv` / `.jsonl`, `rename_plan.csv`,
-  etc.) — scaffolded output files, ready for a later cataloguing pass to
-  populate.
+- **`catalogue.db`** — SQLite database, the primary queryable catalogue
+  store. Produced/updated by `python3 catalogue.py`.
+- **`catalogued_files/`** (`catalogue_master.jsonl`, `duplicate_report.csv`,
+  `rename_plan.csv`, `unreadable_or_encrypted_report.csv`, etc.) — CSV/JSONL
+  exports and reports derived from `catalogue.db`.
 
 ## First-time setup
 
@@ -64,6 +66,29 @@ output-folder scaffolding that a later, separate cataloguing pass will use.
 Clone this repo, populate `instance/project_config.json` and `instance/.env`
 with that project's values (starting from the `templates/` examples), and
 run `setup.py`. Nothing in `templates/` needs to change.
+
+## Running the cataloguer
+
+`catalogue.py` implements Pass 1-3 of `templates/cataloguing_instructions_core.txt`
+against `instance/catalogue.db` (SQLite, primary queryable store):
+
+```
+python3 catalogue.py scan          # Pass 1: walk SOURCE_DATA_ROOTS, hash + inventory every
+                                    # non-zip file; known cloned spec/code repos are catalogued
+                                    # as one rollup record each rather than per file
+python3 catalogue.py extract       # Pass 2: text/OCR content preview + heuristic classification
+python3 catalogue.py duplicates    # group by sha256, flag exact duplicates for later deletion
+python3 catalogue.py rename-plan   # Pass 3: PROPOSE filenames -> instance/catalogued_files/rename_plan.csv
+python3 catalogue.py export-jsonl  # refresh instance/catalogued_files/catalogue_master.jsonl from the DB
+python3 catalogue.py stats         # summary counts
+python3 catalogue.py all           # runs all of the above in order
+```
+
+It never renames, moves, copies or deletes a source file. Pass 4 (approved
+rename into `instance/catalogued_files/`) is a deliberately separate, human-
+approved step, not implemented yet — see `TODO.md`. Everything from this
+first automated pass is written with `human_review_required = 1` and low
+`rename_confidence`; treat it as triage, not a finished catalogue.
 
 ## Key principle (unchanged from the original standard)
 
