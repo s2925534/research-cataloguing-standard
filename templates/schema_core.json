@@ -133,6 +133,10 @@
     "duplicate_group_id": { "type": ["string", "null"] },
     "canonical_catalogue_id": { "type": ["string", "null"] },
     "supersedes_catalogue_id": { "type": ["string", "null"] },
+    "source_group_id": {
+      "type": ["string", "null"],
+      "description": "Shared identifier (slug of the base filename) linking files that are repeat exports/downloads of the same underlying report or document, e.g. 'job-management (11).csv' and 'job-management (20).csv'. Independent of duplicate_group_id/canonical_catalogue_id: members can have different content (later exports) and are never auto-excluded because of this grouping alone."
+    },
     "use_decision": {
       "type": "string",
       "enum": ["main_body", "appendix", "citation_only", "analysis_only", "archive_only", "exclude", "undecided"]

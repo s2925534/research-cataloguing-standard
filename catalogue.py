@@ -20,10 +20,11 @@ Usage:
     python3 catalogue.py extract       # Pass 2: content preview + heuristic classification
     python3 catalogue.py enrich        # Pass 2.5: embedded metadata + domain identifiers
     python3 catalogue.py duplicates    # group by hash, flag exact duplicates
+    python3 catalogue.py group         # group by base filename (e.g. repeat report exports/downloads)
     python3 catalogue.py rename-plan   # Pass 3: propose filenames, write rename_plan.csv (no renaming)
     python3 catalogue.py export-jsonl  # refresh catalogue_master.jsonl from the DB
     python3 catalogue.py verify        # data-integrity regression check (filename/path consistency)
-    python3 catalogue.py all           # scan + extract + enrich + duplicates + rename-plan + export + verify + stats
+    python3 catalogue.py all           # scan + extract + enrich + duplicates + group + rename-plan + export + verify + stats
     python3 catalogue.py stats         # summary counts
 """
 from __future__ import annotations
@@ -203,6 +204,7 @@ CREATE TABLE IF NOT EXISTS catalogue (
     duplicate_group_id TEXT,
     canonical_catalogue_id TEXT,
     supersedes_catalogue_id TEXT,
+    source_group_id TEXT,
     use_decision TEXT DEFAULT 'undecided',
     reason_for_use_decision TEXT,
     retention_class TEXT DEFAULT 'review_required',
@@ -228,10 +230,18 @@ CREATE TABLE IF NOT EXISTS counters (
 
 
 def get_db() -> sqlite3.Connection:
+    """CREATE TABLE IF NOT EXISTS only covers brand-new databases; existing
+    ones need columns added explicitly here when the schema grows."""
     INSTANCE_DIR.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA_SQL)
+    existing_cols = {row["name"] for row in conn.execute("PRAGMA table_info(catalogue)")}
+    if "source_group_id" not in existing_cols:
+        conn.execute("ALTER TABLE catalogue ADD COLUMN source_group_id TEXT")
+        conn.commit()
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_catalogue_source_group_id ON catalogue(source_group_id)")
+    conn.commit()
     return conn
 
 
@@ -784,6 +794,51 @@ def cmd_enrich(project_config: dict, env: dict) -> None:
 
 
 # --------------------------------------------------------------------------
+# Pass 2.6: source grouping (repeat report exports/downloads, by filename)
+# --------------------------------------------------------------------------
+
+def cmd_group_files() -> None:
+    """Groups files that share a base filename once a trailing repeat-download
+    suffix like ' (2)' is stripped - e.g. 'job-management (11).csv' and
+    'job-management (20).csv' are the same report exported at different times.
+    This is independent of duplicate_status: members of a source_group can
+    have completely different content (later exports), so it is never used
+    to resolve or exclude duplicates, only to show lineage."""
+    conn = get_db()
+    now = datetime.now(timezone.utc).isoformat()
+
+    rows = conn.execute(
+        "SELECT catalogue_id, original_filename FROM catalogue WHERE is_repo_rollup = 0"
+    ).fetchall()
+
+    groups: dict[str, list[str]] = {}
+    for row in rows:
+        stem = Path(row["original_filename"]).stem
+        m = REPEAT_SUFFIX_RE.match(stem)
+        base = m.group(1).strip() if m else stem
+        slug = clean_filename_slug(base)
+        if not slug:
+            continue  # too short/generic (e.g. 'i', 'sys', a bare numeric id) to be a meaningful group key
+        groups.setdefault(slug, []).append(row["catalogue_id"])
+
+    conn.execute("UPDATE catalogue SET source_group_id = NULL WHERE is_repo_rollup = 0")
+    assigned = 0
+    for slug, members in groups.items():
+        if len(members) < 2:
+            continue
+        conn.executemany(
+            "UPDATE catalogue SET source_group_id = ?, updated_at = ? WHERE catalogue_id = ?",
+            [(slug, now, catalogue_id) for catalogue_id in members],
+        )
+        assigned += len(members)
+
+    conn.commit()
+    conn.close()
+    group_count = sum(1 for members in groups.values() if len(members) >= 2)
+    print(f"Pass 2.6 (group) complete: {group_count} source groups, {assigned} member records.")
+
+
+# --------------------------------------------------------------------------
 # Duplicate detection
 # --------------------------------------------------------------------------
 
@@ -858,6 +913,10 @@ UUID_RE = re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F
 LONG_HEX_RE = re.compile(r"\b[0-9a-fA-F]{16,}\b")
 LONG_DIGIT_RE = re.compile(r"\b\d{9,}\b")
 GENERIC_NOISE_WORDS = {"img", "image", "copy", "final", "zip", "export", "untitled", "scan"}
+
+# Matches the " (2)", " (3)" etc. suffix a browser/OS appends when a file of
+# the same name is downloaded/saved again - the signature of a repeat export.
+REPEAT_SUFFIX_RE = re.compile(r"^(.*?)\s*\((\d+)\)$")
 
 
 def slugify(text: str, max_words: int = 10, max_len: int = 70) -> str:
@@ -1025,14 +1084,16 @@ def cmd_rename_plan(env: dict) -> None:
             "review_notes = ?, short_title = ?, updated_at = ? WHERE catalogue_id = ?",
             (candidate, confidence, review_note, short_title, now, row["catalogue_id"]),
         )
-        plan_rows.append((row["catalogue_id"], row["original_filename"], row["source_path"], candidate, source))
+        plan_rows.append((row["catalogue_id"], row["original_filename"], row["source_path"], candidate, source,
+                          row["source_group_id"]))
 
     conn.commit()
     conn.close()
 
     with RENAME_PLAN_PATH.open("w", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh)
-        writer.writerow(["catalogue_id", "original_filename", "source_path", "proposed_filename", "slug_source"])
+        writer.writerow(["catalogue_id", "original_filename", "source_path", "proposed_filename", "slug_source",
+                         "source_group_id"])
         writer.writerows(plan_rows)
 
     print(
@@ -1180,6 +1241,8 @@ def main() -> int:
         cmd_enrich(project_config, env)
     elif command == "duplicates":
         cmd_duplicates()
+    elif command == "group":
+        cmd_group_files()
     elif command == "rename-plan":
         cmd_rename_plan(env)
     elif command == "export-jsonl":
@@ -1193,6 +1256,7 @@ def main() -> int:
         cmd_extract(project_config)
         cmd_enrich(project_config, env)
         cmd_duplicates()
+        cmd_group_files()
         cmd_rename_plan(env)
         cmd_export_jsonl()
         cmd_verify()
