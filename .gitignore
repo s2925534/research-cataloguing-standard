@@ -1,0 +1,7 @@
+# OS / IDE
+.DS_Store
+.idea/
+
+# This checkout's real config, generated schema, and cataloguing outputs.
+# templates/ holds the committed, reusable, project-agnostic versions instead.
+instance/

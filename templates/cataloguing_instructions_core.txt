@@ -1,0 +1,177 @@
+Research File Cataloguing and Renaming Instructions (core, project-agnostic)
+
+Purpose
+
+Create an auditable catalogue of all research files and propose consistent
+names, for any research project. The catalogue is the source of truth.
+Filenames are human-readable labels only.
+
+Where project-specific values live
+
+This document intentionally does not hardcode organisations, systems,
+extended artefact types, or research taxonomies (e.g. RQ mapping, framework
+components). Those live in project_config.json for the active project and
+are merged into schema.generated.json by setup.py. Read schema.generated.json
+for the concrete allowed values before cataloguing anything.
+
+Non-negotiable rules
+
+1. Never delete, overwrite or destructively rename a source file.
+2. Preserve one immutable copy of every raw file.
+3. Compute a hash (project_config-selected algorithm, default sha256) before any rename or move.
+4. Keep original_filename and source_path permanently.
+5. Do not guess missing dates, organisations, identifiers, authors, versions, fields or evidence claims.
+6. Use UNKNOWN when information cannot be confirmed.
+7. Mark human_review_required = true whenever confidence is below the .env REVIEW_CONFIDENCE_THRESHOLD or metadata conflicts.
+8. Do not place personal names, phone numbers, email addresses, street addresses or commercially sensitive references in filenames.
+9. Preserve the original file extension.
+10. A file may support a claim only when the exact supporting content is identifiable.
+11. Do not treat AI-generated summaries as evidence.
+12. Do not OCR unless text extraction fails and OCR is genuinely required, or .env OCR_ENABLED=true has been explicitly set.
+13. Do not use filesystem modified time as document_date unless no other date exists. If used, state this in review_notes.
+14. Separate actual operational evidence, illustrative examples, simulated evidence and planned validation.
+15. Never report a validation activity as completed unless a result file exists.
+
+Repository layout
+
+Controlled by project_config.json -> repository_layout:
+  "flat"   -> a single catalogued_files/ folder plus catalog.json + catalog.html.
+  "staged" -> the numbered pipeline below.
+
+00_INBOX_UNPROCESSED
+01_RAW_IMMUTABLE
+02_LITERATURE
+03_STANDARDS_AND_FRAMEWORKS
+04_OPERATIONAL_EVIDENCE
+05_API_SCHEMAS_AND_INTEGRATIONS
+06_DATA_EXPORTS
+07_RESEARCH_ARTEFACTS
+08_SUPERVISION_AND_TRANSCRIPTS
+09_VALIDATION
+10_OUTPUTS
+98_QUARANTINE_UNREADABLE
+99_ARCHIVE_SUPERSEDED
+
+Filename convention
+
+<DATE>__<CLASS>__<ORGANISATION>__<SYSTEM>__<ARTEFACT>__<PRIMARY-ID>__v<NN>__<STATUS>__<ACCESS>.<ext>
+
+Field rules
+
+DATE
+Use YYYY-MM-DD when exact. Use YYYY-MM when only month is known.
+Use YYYY when only year is known. Use UNDATED when unknown.
+Do not invent 01 January for publications that only provide a year.
+
+CLASS
+Use one of: LIT, STD, OPS, DAT, API, IMG, ART, TRN, VAL, ADM, CODE
+(see vocabularies_core.json -> file_classes).
+
+ORGANISATION
+Use an approved code from schema.generated.json -> source_organisation enum
+(sourced from project_config.json -> organisations). Use UNKNOWN when not confirmed.
+
+SYSTEM
+Use an approved code from schema.generated.json -> source_system enum
+(sourced from project_config.json -> systems). Use NA when the concept does not apply.
+
+ARTEFACT
+Use a controlled artefact type from schema.generated.json -> artefact_type enum
+(core types from vocabularies_core.json plus project_config.json -> extended_artefact_types).
+
+PRIMARY-ID
+Use the strongest non-sensitive identifier available for the project's domain
+(see project_config.json -> domain_identifier_fields for the recognised
+identifier categories, e.g. container number, booking number, job ID).
+Use MULTI when several primary objects are present. Do not expose customer
+names or personal identifiers.
+
+VERSION
+Use v01 for the first repository copy. Increment only when content changes
+or a distinct revision is received. Keep source_version separately for
+externally versioned standards.
+
+STATUS
+Use RAW, WORKING, REVIEWED, VERIFIED, REDACTED, FINAL, SUPERSEDED or EXCLUDED
+(see vocabularies_core.json -> statuses).
+
+ACCESS
+Use PUB, INTERNAL, CONF or RESTRICTED (see vocabularies_core.json -> access_classes).
+
+Processing workflow
+
+Pass 1, inventory only
+1. Scan the folders under .env -> SOURCE_DATA_ROOTS recursively.
+2. Record original filename and source path.
+3. Compute hash and file size.
+4. Detect exact duplicates by hash.
+5. Detect probable near-duplicates by normalised title, size, page count and content similarity.
+6. Do not rename or move files.
+7. Output catalogue_master.jsonl, catalogue_master.csv and duplicate_report.csv.
+
+Pass 2, content extraction
+1. Extract embedded metadata and internal title.
+2. Identify source organisation and source system only when explicit.
+3. Extract document date separately from ingest date.
+4. Extract domain identifiers (project_config.json -> domain_identifier_fields) only when explicit.
+5. For academic sources, extract authors, year, title, source, DOI and APA 7 citation.
+6. For standards, record issuer, standard title and source version.
+7. For operational files, record provenance, sensitivity and primary operational object.
+8. For images, record visible identifiers, process context and view type. Use MULTI when several objects are visible.
+9. Populate evidence role and evidence status conservatively.
+10. Populate research_taxonomy values only from project_config.json -> research_taxonomies; do not invent tags.
+11. Populate content_preview up to project_config.json -> preview_max_words words, extracted (or OCR'd if OCR_ENABLED) from actual file content only.
+12. Set human_review_required based on ambiguity and sensitivity.
+
+Pass 3, rename proposal
+1. Generate proposed_filename using the convention.
+2. Ensure filename is ASCII, contains no spaces, and uses double underscores between fields.
+3. Use hyphens within descriptive fields.
+4. Keep filenames under 180 characters where possible.
+5. If two files produce the same name, append a non-semantic sequence such as __DUP-02 before the extension and mark duplicate_status.
+6. Do not execute renames until a human approves rename_plan.csv.
+
+Pass 4, approved rename
+1. Copy approved files from the immutable raw location to the appropriate working folder.
+2. Rename the working copy only.
+3. Write a sidecar metadata file named <proposed_filename>.meta.json.
+4. Update processing_status to renamed.
+5. Record the new path.
+6. Never alter the immutable raw copy.
+
+Required outputs
+
+catalogue_master.jsonl
+catalogue_master.csv
+rename_plan.csv
+duplicate_report.csv
+unreadable_or_encrypted_report.csv
+human_review_queue.csv
+cataloguing_log.txt
+
+Anti-hallucination rules
+
+1. If a value is not explicit, use UNKNOWN or null.
+2. Do not infer that a file validates a project component merely because the topic appears related.
+3. Do not invent fields from JSON, CSV, PDF, DOCX, email or image files.
+4. Do not invent document dates from file creation timestamps.
+5. Do not treat a filename as authoritative when internal content contradicts it.
+6. Do not claim an operational document is public.
+7. Do not claim expert validation, scenario testing or historical replay has occurred unless result files exist.
+8. Do not summarise unreadable files as though they were successfully parsed.
+9. Do not merge records solely because filenames look similar.
+10. Every rename must be reversible through original_filename, source_path and hash.
+
+Human review triggers
+
+Always require human review when:
+1. A file contains personal or commercially sensitive data.
+2. A file is unreadable, encrypted, corrupted or only partially parsed.
+3. The document date is uncertain.
+4. More than one source organisation is plausible.
+5. Multiple domain identifiers are present (see project_config.json -> domain_identifier_fields).
+6. The file may be a duplicate or superseded version.
+7. Evidence role or research mapping is uncertain.
+8. The proposed filename would expose sensitive information.
+9. The file could be used as primary evidence in the thesis or output.
+10. rename_confidence or metadata_confidence is below .env -> REVIEW_CONFIDENCE_THRESHOLD.

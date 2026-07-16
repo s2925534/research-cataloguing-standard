@@ -1,0 +1,150 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/research-catalogue-core.schema.json",
+  "title": "Research Source Catalogue Record (core, project-agnostic)",
+  "description": "Authoritative metadata record for literature, standards, operational evidence, data exports, API schemas, images, transcripts, research artefacts and validation files, for any research project. The filename is a human-readable label only; this catalogue record is the source of truth. Fields marked '(project-controlled)' have their allowed values supplied by project_config.json, not hardcoded here. Run setup.py to produce schema.generated.json, which has those enums filled in for the active project.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "catalogue_id",
+    "original_filename",
+    "source_path",
+    "proposed_filename",
+    "extension",
+    "sha256",
+    "file_class",
+    "artefact_type",
+    "access_classification",
+    "processing_status",
+    "evidence_status",
+    "human_review_required"
+  ],
+  "properties": {
+    "catalogue_id": {
+      "type": "string",
+      "pattern": "^(LIT|STD|OPS|DAT|API|IMG|ART|TRN|VAL|ADM|CODE)-[0-9]{5}$",
+      "description": "Stable identifier. Never reuse an identifier after assignment."
+    },
+    "original_filename": { "type": "string" },
+    "source_path": { "type": "string" },
+    "proposed_filename": {
+      "type": "string",
+      "description": "Use the convention: <DATE>__<CLASS>__<ORGANISATION>__<SYSTEM>__<ARTEFACT>__<PRIMARY-ID>__v<NN>__<STATUS>__<ACCESS>.<ext>"
+    },
+    "extension": { "type": "string" },
+    "mime_type": { "type": ["string", "null"] },
+    "sha256": { "type": "string", "pattern": "^[A-Fa-f0-9]{64}$" },
+    "file_size_bytes": { "type": ["integer", "null"], "minimum": 0 },
+    "ingest_date": { "type": "string", "format": "date", "description": "Date the file entered the research repository." },
+    "document_date": { "type": ["string", "null"], "description": "Use YYYY-MM-DD, YYYY-MM, YYYY, or null. Do not guess." },
+    "publication_year": { "type": ["integer", "null"], "minimum": 1800, "maximum": 2100 },
+    "file_revision": { "type": "string", "pattern": "^v[0-9]{2,3}$", "default": "v01" },
+    "source_version": { "type": ["string", "null"], "description": "Version stated by the source, e.g. 'DCSA Booking 2.0' or 'DMN 1.4'." },
+    "file_class": {
+      "type": "string",
+      "enum": ["LIT", "STD", "OPS", "DAT", "API", "IMG", "ART", "TRN", "VAL", "ADM", "CODE"]
+    },
+    "source_organisation": {
+      "type": ["string", "null"],
+      "description": "(project-controlled) Allowed values come from project_config.json -> organisations."
+    },
+    "source_system": {
+      "type": ["string", "null"],
+      "description": "(project-controlled) Allowed values come from project_config.json -> systems."
+    },
+    "source_actor_role": { "type": ["string", "null"] },
+    "artefact_type": {
+      "type": "string",
+      "description": "(project-controlled) Allowed values come from vocabularies_core.json -> recommended_artefact_types plus project_config.json -> extended_artefact_types."
+    },
+    "title": { "type": ["string", "null"] },
+    "short_title": { "type": ["string", "null"] },
+    "authors": { "type": "array", "items": { "type": "string" }, "default": [] },
+    "publisher_or_issuer": { "type": ["string", "null"] },
+    "doi": { "type": ["string", "null"] },
+    "source_url": { "type": ["string", "null"] },
+    "apa7_citation": { "type": ["string", "null"] },
+    "primary_entity_type": {
+      "type": "string",
+      "enum": ["container", "booking", "job", "shipment", "vessel", "actor", "document", "event", "dataset", "framework_component", "meeting", "standard", "publication", "multi", "none", "unknown"],
+      "description": "Generic entity kinds. Add project-specific entity kinds via project_config.json -> extended_entity_types if needed."
+    },
+    "primary_entity_id": { "type": ["string", "null"] },
+    "secondary_entity_ids": { "type": "array", "items": { "type": "string" }, "default": [] },
+    "domain_identifiers": {
+      "type": "object",
+      "description": "Free-form map of project-specific identifier arrays (e.g. container_numbers, booking_numbers, job_ids, event_ids, rule_ids). Keys are defined per project in project_config.json -> domain_identifier_fields.",
+      "additionalProperties": { "type": "array", "items": { "type": "string" } },
+      "default": {}
+    },
+    "source_fields": { "type": "array", "items": { "type": "string" }, "default": [] },
+    "research_taxonomy": {
+      "type": "object",
+      "description": "Free-form map of project-specific classification tags (e.g. framework_components, lifecycle_stages, readiness_dimensions, rq_mapping for this MPhil project; a different project would define its own keys). Keys and allowed values are defined in project_config.json -> research_taxonomies.",
+      "additionalProperties": { "type": "array", "items": { "type": "string" } },
+      "default": {}
+    },
+    "document_sections": { "type": "array", "items": { "type": "string" }, "default": [] },
+    "claim_ids": { "type": "array", "items": { "type": "string" }, "default": [] },
+    "evidence_role": {
+      "type": "string",
+      "enum": ["primary_operational_evidence", "supporting_operational_evidence", "external_standard", "academic_foundation", "methodological_guidance", "validation_evidence", "illustrative_only", "contextual_only", "excluded", "unassigned"]
+    },
+    "evidence_status": {
+      "type": "string",
+      "enum": ["raw_unreviewed", "parsed_unverified", "source_verified", "content_verified", "anonymised", "superseded", "excluded", "evidence_gap"]
+    },
+    "verification_basis": { "type": ["string", "null"], "description": "Explain exactly what was verified and how. Do not use vague statements." },
+    "content_preview": {
+      "type": ["string", "null"],
+      "description": "Short extracted or OCR'd preview of file content, capped at project_config.json -> preview_max_words words.",
+      "maxLength": 6000
+    },
+    "summary": { "type": ["string", "null"] },
+    "keywords": { "type": "array", "items": { "type": "string" }, "default": [] },
+    "access_classification": {
+      "type": "string",
+      "enum": ["PUB", "INTERNAL", "CONF", "RESTRICTED"]
+    },
+    "contains_personal_data": { "type": "boolean", "default": false },
+    "contains_commercially_sensitive_data": { "type": "boolean", "default": false },
+    "ethics_status": {
+      "type": "string",
+      "enum": ["not_assessed", "not_required", "approval_required", "approved", "restricted_use"]
+    },
+    "redaction_status": {
+      "type": "string",
+      "enum": ["not_assessed", "not_required", "required", "redacted", "cannot_share"]
+    },
+    "processing_status": {
+      "type": "string",
+      "enum": ["unprocessed", "parsed", "partially_parsed", "unreadable", "encrypted", "corrupted", "catalogued", "renamed", "quarantined"]
+    },
+    "parse_method": { "type": ["string", "null"] },
+    "ocr_used": { "type": "boolean", "default": false },
+    "rename_confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "metadata_confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "human_review_required": { "type": "boolean" },
+    "review_notes": { "type": ["string", "null"] },
+    "duplicate_status": {
+      "type": "string",
+      "enum": ["unique", "exact_duplicate", "near_duplicate", "superseded_version", "unresolved"]
+    },
+    "duplicate_group_id": { "type": ["string", "null"] },
+    "canonical_catalogue_id": { "type": ["string", "null"] },
+    "supersedes_catalogue_id": { "type": ["string", "null"] },
+    "use_decision": {
+      "type": "string",
+      "enum": ["main_body", "appendix", "citation_only", "analysis_only", "archive_only", "exclude", "undecided"]
+    },
+    "reason_for_use_decision": { "type": ["string", "null"] },
+    "retention_class": {
+      "type": "string",
+      "enum": ["permanent", "project_life", "temporary", "review_required"]
+    },
+    "project_id": { "type": "string", "description": "Slug of the owning research project, from project_config.json -> project_id." },
+    "created_at": { "type": "string", "format": "date-time" },
+    "updated_at": { "type": "string", "format": "date-time" },
+    "notes": { "type": ["string", "null"] }
+  }
+}

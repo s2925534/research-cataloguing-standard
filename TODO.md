@@ -1,0 +1,36 @@
+# TODO
+
+## Cataloguing pipeline (not started yet)
+
+- [ ] Pass 1 — inventory scan of `_ResearchData`: walk `SOURCE_DATA_ROOTS`, record
+      `original_filename`/`source_path`, compute hashes, detect exact duplicates,
+      write `instance/catalogued_files/catalogue_master.jsonl` / `.csv` / `duplicate_report.csv`.
+- [ ] Pass 2 — content extraction: text extraction (PDF/DOCX/CSV/MD/EML/XLSX) plus
+      OCR fallback for images/screenshots (`OCR_ENABLED=true`), populate
+      `content_preview` (capped at `preview_max_words`), dates, organisation/system,
+      domain identifiers, research taxonomy tags.
+- [ ] Pass 3 — rename proposal: generate `proposed_filename` per the naming
+      convention, detect same-name collisions, flag likely duplicates for review
+      rather than auto-deleting.
+- [ ] Pass 4 — approved rename: copy files into `instance/catalogued_files/`,
+      write `<name>.meta.json` sidecars, never touch the immutable source.
+
+## Catalogue viewer
+
+- [ ] Build `catalog.html` — static page that renders `catalogue_master.jsonl`/
+      a `catalog.json` export as a browsable/searchable table.
+- [ ] Add JS that polls/reloads the catalogue JSON so the page always reflects
+      the latest data on disk without a manual rebuild.
+
+## Engine
+
+- [ ] Add a `human_review_queue.csv` triage view/report.
+- [ ] Add lightweight tests for `setup.py` (config validation, schema merge).
+- [ ] Consider validating generated catalogue records against
+      `schema.generated.json` (e.g. via `jsonschema` package) as part of Pass 2.
+
+## Housekeeping
+
+- [ ] Decide whether `researchboss` (the downstream catalogue database project
+      mentioned by the user) should consume `catalogue_master.jsonl` directly or
+      via an export step.

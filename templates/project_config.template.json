@@ -1,0 +1,30 @@
+{
+  "_comment": "Starting point for a new research project. Copy to instance/project_config.json and fill in your project's real values. See README.md.",
+
+  "project_id": "my_research_project",
+  "project_name": "My Research Project",
+  "researcher": "REPLACE_ME",
+  "institution": "REPLACE_ME",
+
+  "repository_layout": "flat",
+  "_repository_layout_options": ["flat", "staged"],
+  "_repository_layout_note": "flat = single output folder + catalog.json/catalog.html. staged = the numbered 00_INBOX_UNPROCESSED..99_ARCHIVE_SUPERSEDED pipeline from cataloguing_instructions_core.txt.",
+
+  "organisations": ["YOUR_INSTITUTION", "PARTNER_ORG_A", "PARTNER_ORG_B"],
+
+  "systems": ["SYSTEM_A", "SYSTEM_B", "NA"],
+
+  "extended_artefact_types": [],
+
+  "extended_entity_types": [],
+
+  "domain_identifier_fields": [],
+
+  "research_taxonomies": {
+    "rq_mapping": ["RQ1", "RQ2", "OTHER"]
+  },
+
+  "preview_max_words": 500,
+
+  "catalogue_id_prefix_padding": 5
+}
