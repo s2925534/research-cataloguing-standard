@@ -49,7 +49,14 @@ Usage:
                                         # (needs `pip install jsonschema` - see requirements.txt; not part of
                                         # `all`), writes schema_validation_report.csv
     python3 catalogue.py verify        # data-integrity regression check (filename/path consistency)
-    python3 catalogue.py all           # scan + extract + enrich + duplicates + near-duplicates + group + rename-plan + review-queue + export + verify + stats
+    python3 catalogue.py all [--dry-run] [--limit N]
+                                        # scan + extract + enrich + duplicates + near-duplicates + group +
+                                        # rename-plan + review-queue + export + verify + stats.
+                                        # --dry-run runs the real pipeline against a disposable copy of
+                                        # catalogue.db (deleted afterward) - instance/catalogue.db and
+                                        # instance/catalogued_files/ are never written to. --limit N trims
+                                        # the copy to the first N catalogue_ids (by catalogue_id) right
+                                        # after scan, so the rest of the pipeline only processes N records.
     python3 catalogue.py stats         # summary counts
 """
 from __future__ import annotations
@@ -65,6 +72,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import unicodedata
 import urllib.error
 import urllib.request
@@ -81,6 +89,15 @@ JSONL_PATH = CATALOGUE_DIR / "catalogue_master.jsonl"
 DUPLICATE_REPORT_PATH = CATALOGUE_DIR / "duplicate_report.csv"
 RENAME_PLAN_PATH = CATALOGUE_DIR / "rename_plan.csv"
 UNREADABLE_REPORT_PATH = CATALOGUE_DIR / "unreadable_or_encrypted_report.csv"
+
+
+def display_path(p: Path) -> str:
+    """cmd_all's --dry-run redirects the module-level *_PATH constants to a
+    temp dir outside ROOT_DIR, so relative_to(ROOT_DIR) would raise there."""
+    try:
+        return str(p.relative_to(ROOT_DIR))
+    except ValueError:
+        return str(p)
 
 # Generic, project-agnostic engine defaults: file-extension heuristics that
 # apply to any research project. Anything that names a specific folder,
@@ -1699,7 +1716,7 @@ def cmd_export_jsonl() -> None:
         for row in rows:
             fh.write(json.dumps(row_to_record(row), ensure_ascii=False) + "\n")
     conn.close()
-    print(f"Exported {len(rows)} records -> {JSONL_PATH.relative_to(ROOT_DIR)}")
+    print(f"Exported {len(rows)} records -> {display_path(JSONL_PATH)}")
 
 
 SCHEMA_VALIDATION_REPORT_PATH = CATALOGUE_DIR / "schema_validation_report.csv"
@@ -2037,6 +2054,104 @@ def cmd_stats() -> None:
     conn.close()
 
 
+def cmd_all(project_config: dict, env: dict, dry_run: bool = False, limit: int | None = None) -> None:
+    """Runs the full non-AI, non-apply-rename pipeline in order.
+
+    --dry-run: every cmd_* below manages its own sqlite3 connection and
+    commits independently (scan commits every 200 rows, extract/enrich/etc.
+    commit and close at the end of each pass), so a single rolled-back
+    transaction can't span the whole chain - closing a connection with a
+    "no-op'd" commit only rolls back that one pass, and the next pass would
+    open a fresh connection to a DB that never actually received it. The
+    only way to preview the *whole chain* faithfully is to run it for real
+    against a disposable copy of catalogue.db, then discard the copy.
+    instance/catalogue.db and instance/catalogued_files/ are never opened in
+    this mode - every path a cmd_* function writes through is redirected to
+    a temp directory for the duration of the call.
+
+    --limit N: scan runs first, unrestricted, against the full real source
+    tree (so "0 new files found" still means what it normally means); only
+    after that does the copy get trimmed down to its first N catalogue_ids,
+    so every later pass - extract, enrich, dedup, rename-plan, review-queue,
+    export, verify, stats - operates on exactly that N-record sample."""
+    global DB_PATH, JSONL_PATH, DUPLICATE_REPORT_PATH, RENAME_PLAN_PATH, UNREADABLE_REPORT_PATH, \
+        REVIEW_QUEUE_PATH, SCHEMA_VALIDATION_REPORT_PATH
+
+    if not dry_run:
+        cmd_scan(project_config, env)
+        cmd_extract(project_config)
+        cmd_enrich(project_config, env)
+        cmd_duplicates()
+        cmd_near_duplicates()
+        cmd_group_files()
+        cmd_rename_plan(env)
+        cmd_review_queue()
+        cmd_export_jsonl()
+        cmd_verify()
+        cmd_stats()
+        return
+
+    real_db_path = DB_PATH
+    real_output_paths = (JSONL_PATH, DUPLICATE_REPORT_PATH, RENAME_PLAN_PATH, UNREADABLE_REPORT_PATH,
+                          REVIEW_QUEUE_PATH, SCHEMA_VALIDATION_REPORT_PATH)
+    tmp_dir = Path(tempfile.mkdtemp(prefix="catalogue_dry_run_"))
+    tmp_db_path = tmp_dir / "catalogue.db"
+    if real_db_path.exists():
+        shutil.copy2(real_db_path, tmp_db_path)
+
+    DB_PATH = tmp_db_path
+    JSONL_PATH = tmp_dir / JSONL_PATH.name
+    DUPLICATE_REPORT_PATH = tmp_dir / DUPLICATE_REPORT_PATH.name
+    RENAME_PLAN_PATH = tmp_dir / RENAME_PLAN_PATH.name
+    UNREADABLE_REPORT_PATH = tmp_dir / UNREADABLE_REPORT_PATH.name
+    REVIEW_QUEUE_PATH = tmp_dir / REVIEW_QUEUE_PATH.name
+    SCHEMA_VALIDATION_REPORT_PATH = tmp_dir / SCHEMA_VALIDATION_REPORT_PATH.name
+
+    print(f"DRY RUN: working copy at {tmp_db_path} - {real_db_path.relative_to(ROOT_DIR)} "
+          f"will not be opened again until this finishes.")
+
+    try:
+        cmd_scan(project_config, env)
+
+        if limit is not None:
+            conn = get_db()
+            kept = conn.execute("SELECT catalogue_id FROM catalogue ORDER BY catalogue_id LIMIT ?", (limit,)).fetchall()
+            kept_ids = [r["catalogue_id"] for r in kept]
+            conn.execute(
+                f"DELETE FROM catalogue WHERE catalogue_id NOT IN "
+                f"({','.join('?' for _ in kept_ids)})", kept_ids
+            )
+            conn.commit()
+            conn.close()
+            print(f"Trimmed working copy to {len(kept_ids)} records for the rest of the pipeline.")
+
+        cmd_extract(project_config)
+        cmd_enrich(project_config, env)
+        cmd_duplicates()
+        cmd_near_duplicates()
+        cmd_group_files()
+        cmd_rename_plan(env)
+        cmd_review_queue()
+        cmd_export_jsonl()
+        cmd_verify()
+        cmd_stats()
+
+        print(f"\nDRY RUN complete. Nothing written to {real_db_path.relative_to(ROOT_DIR)} or "
+              f"{CATALOGUE_DIR.relative_to(ROOT_DIR)}/. Preview output left at {tmp_dir} for inspection "
+              "(not auto-deleted).")
+        for name in ("rename_plan.csv", "human_review_queue.csv"):
+            preview_path = tmp_dir / name
+            if preview_path.exists():
+                lines = preview_path.read_text(encoding="utf-8").splitlines()
+                print(f"\n{name} ({len(lines) - 1 if lines else 0} rows), first 4 lines:")
+                for line in lines[:4]:
+                    print(f"  {line[:200]}")
+    finally:
+        DB_PATH = real_db_path
+        (JSONL_PATH, DUPLICATE_REPORT_PATH, RENAME_PLAN_PATH, UNREADABLE_REPORT_PATH,
+         REVIEW_QUEUE_PATH, SCHEMA_VALIDATION_REPORT_PATH) = real_output_paths
+
+
 # --------------------------------------------------------------------------
 # Main
 # --------------------------------------------------------------------------
@@ -2089,17 +2204,10 @@ def main() -> int:
     elif command == "stats":
         cmd_stats()
     elif command == "all":
-        cmd_scan(project_config, env)
-        cmd_extract(project_config)
-        cmd_enrich(project_config, env)
-        cmd_duplicates()
-        cmd_near_duplicates()
-        cmd_group_files()
-        cmd_rename_plan(env)
-        cmd_review_queue()
-        cmd_export_jsonl()
-        cmd_verify()
-        cmd_stats()
+        args = sys.argv[2:]
+        dry_run = "--dry-run" in args
+        limit = int(args[args.index("--limit") + 1]) if "--limit" in args else None
+        cmd_all(project_config, env, dry_run=dry_run, limit=limit)
     else:
         print(f"Unknown command: {command}")
         print(__doc__)
