@@ -1491,7 +1491,7 @@ def cmd_rename_plan(env: dict) -> None:
             "review_notes = ?, short_title = ?, schema_reference = ?, updated_at = ? WHERE catalogue_id = ?",
             (candidate, confidence, review_note, short_title, schema_reference, now, row["catalogue_id"]),
         )
-        plan_rows.append((row["catalogue_id"], row["original_filename"], candidate, schema_reference,
+        plan_rows.append((row["catalogue_id"], schema_reference, row["original_filename"], candidate,
                           row["source_path"], source, row["source_group_id"]))
 
     conn.commit()
@@ -1501,9 +1501,10 @@ def cmd_rename_plan(env: dict) -> None:
         writer = csv.writer(fh)
         # proposed_filename sits right next to original_filename (not after
         # the long source_path) so before/after is easy to compare at a glance.
-        # schema_reference is the structural prefix only (no slug/org/system/
-        # origin) - citable in a paper without exposing filename-derived detail.
-        writer.writerow(["catalogue_id", "original_filename", "proposed_filename", "schema_reference",
+        # schema_reference (structural prefix only, no slug/org/system/origin -
+        # citable in a paper without exposing filename-derived detail) sits
+        # right next to catalogue_id, the other stable identifier column.
+        writer.writerow(["catalogue_id", "schema_reference", "original_filename", "proposed_filename",
                          "source_path", "slug_source", "source_group_id"])
         writer.writerows(plan_rows)
 
