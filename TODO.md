@@ -13,12 +13,19 @@
 - [x] 🔵 Pass 3 — rename proposal: generate `proposed_filename` per the naming
       convention, detect same-name collisions, flag likely duplicates for review
       rather than auto-deleting. (`catalogue.py rename-plan`)
-- [x] 🔵 Pass 4 — approved rename: copy files into `instance/catalogued_files/`,
-      never touch the immutable source. (`catalogue.py apply-rename --execute`)
+- [x] 🔵 Pass 4 — approved rename: copy files into
+      `instance/catalogued_files/documents/`, never touch the immutable
+      source. (`catalogue.py apply-rename --execute`)
       No per-file `.meta.json` sidecar - that doubled the file count in every
       folder; `catalogue_master.jsonl`/`catalog.html` at the `catalogued_files/`
       root already give per-file metadata lookup, sidecars were pure
       redundancy (removed 2026-07-16).
+      Copies land in `documents/`, not directly in `catalogued_files/` - that
+      mixed the actual research files in with the pipeline's own tool/report
+      output (`catalog.html`, `catalogue_master.*`, `*_report.csv`) sitting in
+      the same listing. Now `catalogued_files/` is "the tools" and
+      `catalogued_files/documents/` is "the research files", cleanly separated
+      (fixed 2026-07-17).
 
 ## Catalogue viewer
 

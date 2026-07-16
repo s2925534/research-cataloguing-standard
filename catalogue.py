@@ -36,15 +36,17 @@ Usage:
     python3 catalogue.py review-queue  # write human_review_queue.csv, ranked by why each record
                                         # needs a look (duplicate flags, low confidence, undecided use)
     python3 catalogue.py apply-rename [--skip-duplicates] [--nested] [--group-literature] [--execute]
-                                        # Pass 4: copy sources -> instance/catalogued_files/ under their
-                                        # proposed_filename (no per-file sidecar - catalogue_master.jsonl
-                                        # at the catalogued_files/ root + catalog.html already cover
-                                        # per-file lookup). Dry-run by default (prints the plan); nothing
-                                        # is written until --execute is passed.
+                                        # Pass 4: copy sources -> instance/catalogued_files/documents/ under
+                                        # their proposed_filename (kept out of catalogued_files/ itself so
+                                        # research files never mix with the pipeline's own tool/report output
+                                        # there - catalog.html, catalogue_master.*, *_report.csv). No per-file
+                                        # sidecar either - catalogue_master.jsonl + catalog.html already cover
+                                        # per-file lookup. Dry-run by default (prints the plan); nothing is
+                                        # written until --execute is passed.
                                         # --skip-duplicates omits files flagged duplicate_status=exact_duplicate.
                                         # --nested mirrors each file's original source subdirectory instead
                                         # of the default flat layout. --group-literature carves LIT records
-                                        # out into catalogued_files/literature/ regardless of the other layout.
+                                        # out into documents/literature/ regardless of the other layout.
     python3 catalogue.py export-jsonl  # refresh catalogue_master.jsonl from the DB
     python3 catalogue.py validate-schema
                                         # optional: validate every record against instance/schema.generated.json
@@ -86,6 +88,12 @@ ROOT_DIR = Path(__file__).resolve().parent
 TEMPLATES_DIR = ROOT_DIR / "templates"
 INSTANCE_DIR = ROOT_DIR / "instance"
 CATALOGUE_DIR = INSTANCE_DIR / "catalogued_files"
+# apply-rename's copies live one level down from CATALOGUE_DIR, not mixed in
+# with the pipeline's own report/tool files (catalog.html, catalogue_master.*,
+# *_report.csv) that also live directly under CATALOGUE_DIR - so a listing of
+# either directory is either "the research documents" or "the tooling", never
+# both at once.
+CATALOGUE_DOCUMENTS_DIR = CATALOGUE_DIR / "documents"
 DB_PATH = INSTANCE_DIR / "catalogue.db"
 JSONL_PATH = CATALOGUE_DIR / "catalogue_master.jsonl"
 DUPLICATE_REPORT_PATH = CATALOGUE_DIR / "duplicate_report.csv"
@@ -1973,43 +1981,50 @@ def cmd_classify_evidence(env: dict, project_config: dict, limit: int | None = N
 
 
 def apply_rename_dest_dir(row: sqlite3.Row, nested: bool, group_literature: bool, source_roots: list[Path]) -> Path:
-    """Where a given record's copy lands under CATALOGUE_DIR, depending on
-    the chosen layout. group_literature takes priority over nested - LIT
-    always lands in literature/ regardless of the other layout, since the
-    point is pulling it out of whatever the main layout would otherwise be."""
+    """Where a given record's copy lands under CATALOGUE_DOCUMENTS_DIR,
+    depending on the chosen layout. group_literature takes priority over
+    nested - LIT always lands in literature/ regardless of the other layout,
+    since the point is pulling it out of whatever the main layout would
+    otherwise be."""
     if group_literature and row["file_class"] == "LIT":
-        return CATALOGUE_DIR / "literature"
+        return CATALOGUE_DOCUMENTS_DIR / "literature"
     if nested:
         source_path = Path(row["source_path"])
         for root in source_roots:
             try:
                 rel_dir = source_path.parent.relative_to(root)
-                return CATALOGUE_DIR / rel_dir if str(rel_dir) != "." else CATALOGUE_DIR
+                return CATALOGUE_DOCUMENTS_DIR / rel_dir if str(rel_dir) != "." else CATALOGUE_DOCUMENTS_DIR
             except ValueError:
                 continue
-    return CATALOGUE_DIR
+    return CATALOGUE_DOCUMENTS_DIR
 
 
 def cmd_apply_rename(env: dict, skip_duplicates: bool, nested: bool, group_literature: bool, execute: bool) -> None:
     """Pass 4 (approved rename): copies each source file into
-    instance/catalogued_files/ under its proposed_filename. Never renames,
-    moves, or deletes the source - copy only. Always a conscious, explicit
-    action: not part of `all`, and dry-run (prints what it would do) unless
-    --execute is passed, so a plan can be reviewed before anything is
-    written to disk.
+    instance/catalogued_files/documents/ under its proposed_filename. Never
+    renames, moves, or deletes the source - copy only. Always a conscious,
+    explicit action: not part of `all`, and dry-run (prints what it would
+    do) unless --execute is passed, so a plan can be reviewed before
+    anything is written to disk.
+
+    Copies land in documents/, one level below catalog.html/catalogue_master.*/
+    *_report.csv - those are the pipeline's own tooling/report output and stay
+    directly under catalogued_files/, so neither directory listing mixes the
+    two: catalogued_files/ is "the tools", catalogued_files/documents/ is "the
+    research files".
 
     No per-file metadata sidecar is written next to each copy - that would
     mean one extra .json file per research file sitting in the same folder
-    (previously literally doubled the file count in catalogued_files/). The
-    single catalogue_master.jsonl at the root of catalogued_files/ already
-    carries every record's full metadata, and catalog.html (also at that
-    root) already gives per-file lookup for it through a web interface -
-    click any row to expand its full record. That single file is the
-    reference; nothing per-copy is needed alongside it.
+    (previously literally doubled the file count in documents/). The single
+    catalogue_master.jsonl at the catalogued_files/ root already carries every
+    record's full metadata, and catalog.html (also at that root) already gives
+    per-file lookup for it through a web interface - click any row to expand
+    its full record. That single file is the reference; nothing per-copy is
+    needed alongside it.
 
-    Layout is flat by default (everything directly under catalogued_files/).
+    Layout is flat by default (everything directly under documents/).
     --nested mirrors each file's original source subdirectory instead.
-    --group-literature carves LIT records out into catalogued_files/literature/
+    --group-literature carves LIT records out into documents/literature/
     regardless of the other layout, so the ~450 literature files don't
     dominate/crowd out everything else."""
     conn = get_db()
@@ -2029,11 +2044,11 @@ def cmd_apply_rename(env: dict, skip_duplicates: bool, nested: bool, group_liter
     layout_desc = ("literature/ split out, " if group_literature else "") + ("nested" if nested else "flat")
     if not execute:
         print(f"DRY RUN (no files written - pass --execute to actually copy): "
-              f"{len(rows)} files would be copied to {CATALOGUE_DIR.relative_to(ROOT_DIR)}/ ({layout_desc} layout)"
+              f"{len(rows)} files would be copied to {CATALOGUE_DOCUMENTS_DIR.relative_to(ROOT_DIR)}/ ({layout_desc} layout)"
               + (f", {excluded_dupes} exact duplicates skipped" if skip_duplicates else "") + ".")
         for row in rows[:10]:
             dest_dir = apply_rename_dest_dir(row, nested, group_literature, source_roots)
-            rel = dest_dir.relative_to(CATALOGUE_DIR)
+            rel = dest_dir.relative_to(CATALOGUE_DOCUMENTS_DIR)
             prefix = f"{rel}/" if str(rel) != "." else ""
             print(f"  {row['catalogue_id']}: {Path(row['source_path']).name} -> "
                   f"{prefix}{row['proposed_filename']}")

@@ -92,21 +92,24 @@ python3 catalogue.py all           # scan..review-queue..export..verify..stats, 
 ```
 
 It never renames, moves, copies or deletes a source file. Pass 4 (approved,
-human-triggered rename into `instance/catalogued_files/`) is a separate,
-explicit step:
+human-triggered rename into `instance/catalogued_files/documents/`) is a
+separate, explicit step:
 
 ```
 python3 catalogue.py apply-rename                    # dry run: prints the plan, writes nothing
-python3 catalogue.py apply-rename --execute           # copies sources -> instance/catalogued_files/
-                                                        # (per-file metadata lookup comes from
-                                                        # catalogue_master.jsonl/catalog.html, not a
-                                                        # sidecar next to each copy)
+python3 catalogue.py apply-rename --execute           # copies sources -> instance/catalogued_files/documents/
+                                                        # (kept out of catalogued_files/ itself so research
+                                                        # files never mix with the pipeline's own tool/report
+                                                        # output there - catalog.html, catalogue_master.*,
+                                                        # *_report.csv. Per-file metadata lookup comes from
+                                                        # catalogue_master.jsonl/catalog.html, not a sidecar
+                                                        # next to each copy.)
 ```
 
 `--skip-duplicates` omits files flagged `duplicate_status=exact_duplicate`;
 `--nested` mirrors each file's original source subdirectory instead of the
 default flat layout; `--group-literature` carves `LIT` records into their
-own `literature/` subfolder regardless of layout. Everything from the
+own `documents/literature/` subfolder regardless of layout. Everything from the
 automated passes is written with `human_review_required = 1` and low
 `rename_confidence`; treat it as triage, not a finished catalogue.
 
