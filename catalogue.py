@@ -1122,16 +1122,72 @@ GENERIC_TITLE_VALUES = {"document", "untitled", "untitled document", "new docume
 REPEAT_SUFFIX_RE = re.compile(r"^(.*?)\s*\((\d+)\)$")
 
 
-def slugify(text: str, max_words: int = 10, max_len: int = 70) -> str:
-    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
-    # Split concatenated camelCase/PascalCase runs and letter<->digit runs into
-    # separate words before collapsing everything else to hyphens, e.g.
-    # "jobManagementReportWorkSchedule29Aug2025" -> "job management report
-    # work schedule 29 aug 2025" rather than one unreadable blob.
+def insert_word_boundaries(text: str) -> str:
+    """Splits concatenated camelCase/PascalCase runs and letter<->digit runs
+    into separate words, e.g. "FreightTrackerDocumentations" -> "Freight
+    Tracker Documentations" or "jobManagementReportWorkSchedule29Aug2025" ->
+    "job Management Report Work Schedule 29 Aug 2025" - rather than one
+    unreadable/undeduplicatable blob. Shared by slugify() and origin_segment()
+    so directory-name tokens get the same word-level treatment as slugs do."""
     text = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", text)
     text = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", " ", text)
     text = re.sub(r"(?<=[A-Za-z])(?=[0-9])", " ", text)
     text = re.sub(r"(?<=[0-9])(?=[A-Za-z])", " ", text)
+    return text
+
+
+def dedupe_across_fields(fields: list[list[str]], max_run: int = 4) -> list[list[str]]:
+    """Given ordered word-lists (one per structural field of a name's
+    descriptive tail, in the order they'll appear), drops any word - or
+    contiguous run of words whose fused, no-separator concatenation matches
+    something already seen - from a later field that already appeared in an
+    earlier one, keeping the first occurrence. Regex-only, no AI cost.
+
+    The fused-run matching is needed because org/system are atomic
+    controlled-vocabulary values (e.g. "FREIGHTTRACKER", never split), while
+    origin_segment()'s directory names go through the same word-boundary
+    splitter as slugs do (so "FreightTrackerDocumentations" becomes
+    "FREIGHT", "TRACKER", "DOCUMENTATIONS") - plain word-for-word comparison
+    would never see that "FREIGHTTRACKER" and "FREIGHT"+"TRACKER" are the
+    same name.
+
+    Never dedupes words against others *within* the same field, since that
+    can be a legitimate repeated term (e.g. "RO_RO" for roll-on/roll-off
+    shipping, or "DATA" appearing in both "BIG_DATA" and "DATA_SCIENCE")."""
+    seen: set[str] = set()
+
+    def add_runs_to_seen(words: list[str]) -> None:
+        for i in range(len(words)):
+            joined = ""
+            for j in range(i, min(i + max_run, len(words))):
+                joined += words[j].upper()
+                seen.add(joined)
+
+    result = []
+    for words in fields:
+        kept = []
+        i, n = 0, len(words)
+        while i < n:
+            joined = ""
+            matched_end = None
+            for j in range(i, min(i + max_run, n)):
+                joined += words[j].upper()
+                if joined in seen:
+                    matched_end = j  # keep extending greedily; last hit wins (longest match)
+            if matched_end is not None:
+                i = matched_end + 1
+            else:
+                if words[i]:
+                    kept.append(words[i])
+                i += 1
+        result.append(kept)
+        add_runs_to_seen(words)
+    return result
+
+
+def slugify(text: str, max_words: int = 10, max_len: int = 70) -> str:
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+    text = insert_word_boundaries(text)
     text = re.sub(r"[^A-Za-z0-9]+", "-", text).strip("-").lower()
     words = [w for w in text.split("-") if w][:max_words]
     slug = "-".join(words)
@@ -1274,7 +1330,12 @@ def _ssl_context():
 
 def origin_segment(source_roots: list[Path], source_path: str) -> str:
     """Sanitized last 1-2 original subdirectory names, so a flat output
-    directory still records where the file came from."""
+    directory still records where the file came from. Word-boundary split
+    (same as slugify()) so a proper-noun directory name like
+    "FreightTrackerDocumentations" becomes separate words rather than one
+    fused token - both readable on its own, and necessary for the
+    cross-field word dedup in cmd_rename_plan to actually see the words in
+    it and compare them against the rest of the name."""
     path = Path(source_path)
     for root in source_roots:
         try:
@@ -1287,7 +1348,7 @@ def origin_segment(source_roots: list[Path], source_path: str) -> str:
     if not rel_parts:
         return "ROOT"
     kept = rel_parts[-2:] if len(rel_parts) > 1 else rel_parts
-    cleaned = [safe_field(part, "") for part in kept]
+    cleaned = [safe_field(insert_word_boundaries(part), "") for part in kept]
     cleaned = [c for c in cleaned if c]
     return "-".join(cleaned)[:50] if cleaned else "ROOT"
 
@@ -1368,19 +1429,29 @@ def cmd_rename_plan(env: dict) -> None:
         # scan and group in a flat folder), descriptive/contextual tokens
         # (what it's about, company, source directory) last. Single "_" between
         # tokens, whole name upper-cased - only the extension stays as-is.
-        # org/system collapse to one token when identical (e.g. dir_org_system
-        # mapping FreightTracker's directory to both org=system=FREIGHTTRACKER),
-        # and drop either one outright if the slug's own last word already
-        # names it (e.g. an AI slug ending "...data-quantainer" followed by
-        # an org token that's also QUANTAINER) - same word, don't say it twice.
-        slug_last_word = slug_part.rsplit("_", 1)[-1].upper() if slug_part else ""
-        org_system_candidates = [org] if org == system else [org, system]
-        org_system_parts = [p for p in org_system_candidates if p.upper() != slug_last_word]
-        org_system = "_".join(org_system_parts)
+        #
+        # The descriptive tail (slug, org/system, origin) can independently
+        # each mention the same real-world name - e.g. an AI slug containing
+        # "freighttracker", the org/system field also FREIGHTTRACKER, and the
+        # origin directory "FreightTrackerDocumentations" - so dedupe across
+        # those fields in sequence, keeping the first occurrence and dropping
+        # the word from every later field. Never dedupe *within* one field
+        # (that's how a real repeated term like "RO_RO" for roll-on/roll-off
+        # shipping, or "DATA" in both "BIG_DATA" and "DATA_SCIENCE", survives).
+        org_system_candidates = [p for p in ([org] if org == system else [org, system]) if p]
+        slug_words = slug_part.split("_") if slug_part else []
+        origin_words = origin.split("-") if origin else []
+        deduped_slug, deduped_org_system, deduped_origin = dedupe_across_fields(
+            [slug_words, org_system_candidates, origin_words]
+        )
+        slug_part = "_".join(deduped_slug) if deduped_slug else slug_part
+        org_system = "_".join(deduped_org_system)
+        origin_final = "_".join(deduped_origin) if deduped_origin else "ROOT"
+
         base_parts = [cls, artefact, primary_id, date_part, "v01", status, access, slug_part]
         if org_system:
             base_parts.append(org_system)
-        base_parts.append(origin)
+        base_parts.append(origin_final)
         base = "_".join(base_parts).upper()
         candidate = f"{base}.{ext}" if ext else base
 
