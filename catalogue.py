@@ -1097,6 +1097,27 @@ def cmd_verify() -> None:
                 problems.append(f"{row['catalogue_id']}: proposed_filename collides with {prior}")
             seen_names[row["proposed_filename"]] = row["catalogue_id"]
 
+    # Sanity check on top of hash-based duplicate detection: two files with the
+    # same SHA-256 are mathematically guaranteed to be the same size, so any
+    # mismatch here means a stored hash or size drifted (stale scan data),
+    # not a real hash collision.
+    dup_groups = conn.execute(
+        "SELECT duplicate_group_id, catalogue_id, file_size_bytes FROM catalogue "
+        "WHERE is_repo_rollup = 0 AND duplicate_group_id IS NOT NULL "
+        "ORDER BY duplicate_group_id"
+    ).fetchall()
+    sizes_by_group: dict[str, set] = {}
+    ids_by_group: dict[str, list] = {}
+    for row in dup_groups:
+        sizes_by_group.setdefault(row["duplicate_group_id"], set()).add(row["file_size_bytes"])
+        ids_by_group.setdefault(row["duplicate_group_id"], []).append(row["catalogue_id"])
+    for group_id, sizes in sizes_by_group.items():
+        if len(sizes) > 1:
+            problems.append(
+                f"duplicate_group {group_id}: members {ids_by_group[group_id]} share a hash "
+                f"but have different file_size_bytes {sizes} - stale hash or size, re-run scan"
+            )
+
     conn.close()
     if problems:
         print(f"verify FAILED: {len(problems)} problem(s) found:")
