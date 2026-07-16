@@ -102,6 +102,8 @@ def load_cataloguing_rules(project_config: dict) -> dict:
     from, and README.md for how to populate it.
     """
     rules = project_config.get("cataloguing_rules", {})
+    organisations = [o for o in project_config.get("organisations", []) if o and o != "NA"]
+    systems = [s for s in project_config.get("systems", []) if s and s != "NA"]
     return {
         "known_repo_dirs": rules.get("known_repo_dirs", {}),
         "dir_file_class_overrides": [tuple(pair) for pair in rules.get("dir_file_class_overrides", [])],
@@ -111,6 +113,20 @@ def load_cataloguing_rules(project_config: dict) -> dict:
             field: re.compile(pattern, re.IGNORECASE)
             for field, pattern in rules.get("domain_identifier_patterns", {}).items()
         },
+        # Whole-word, case-insensitive: catches a controlled org/system name
+        # mentioned in a filename or extracted content even when the file
+        # isn't sitting inside one of the dir_org_system marker directories.
+        # Boundaries use a manual lookaround rather than \b because \b treats
+        # underscore as a word character, which would miss e.g. "interport"
+        # inside "dump-interport_production-...".
+        "org_name_patterns": [
+            (name, re.compile(r"(?<![A-Za-z0-9])" + re.escape(name) + r"(?![A-Za-z0-9])", re.IGNORECASE))
+            for name in organisations
+        ],
+        "system_name_patterns": [
+            (name, re.compile(r"(?<![A-Za-z0-9])" + re.escape(name) + r"(?![A-Za-z0-9])", re.IGNORECASE))
+            for name in systems
+        ],
     }
 
 
@@ -688,6 +704,18 @@ def infer_org_system(source_root: Path, source_path: str, dir_org_system: dict, 
     return None, None
 
 
+def infer_org_system_from_text(text: str, org_name_patterns: list, system_name_patterns: list) -> tuple[str | None, str | None]:
+    """Fallback for when infer_org_system() finds no directory marker: matches
+    the project's controlled organisation/system names as whole words in the
+    filename or extracted content (e.g. 'Interport' mentioned in a loose file
+    at the source root, not inside an 'interport env' folder)."""
+    if not text:
+        return None, None
+    org = next((name for name, pattern in org_name_patterns if pattern.search(text)), None)
+    system = next((name for name, pattern in system_name_patterns if pattern.search(text)), None)
+    return org, system
+
+
 def cmd_enrich(project_config: dict, env: dict) -> None:
     conn = get_db()
     now = datetime.now(timezone.utc).isoformat()
@@ -759,6 +787,14 @@ def cmd_enrich(project_config: dict, env: dict) -> None:
                 if org or system:
                     source_organisation, source_system = org, system
                     break
+
+        if not source_organisation or not source_system:
+            text_org, text_system = infer_org_system_from_text(
+                f"{row['original_filename']} {row['content_preview'] or ''}",
+                rules["org_name_patterns"], rules["system_name_patterns"],
+            )
+            source_organisation = source_organisation or text_org
+            source_system = source_system or text_system
 
         conn.execute(
             """
