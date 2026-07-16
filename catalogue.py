@@ -355,6 +355,19 @@ def iter_source_files(source_root: Path, known_repo_dirs: dict):
             continue
         if any(part in SKIP_NAMES for part in rel_parts):
             continue
+        # A symlink's own path can dodge the SKIP_NAMES check above while its
+        # resolved target sits inside an excluded directory - e.g. a review-
+        # mirror symlink named ".idea __ workspace.xml" (not itself under any
+        # ".idea" path component) pointing at the real .idea/workspace.xml.
+        # Check the resolved target's path too, so IDE/VCS housekeeping files
+        # can't leak into the catalogue via an alias.
+        if path.is_symlink():
+            try:
+                resolved_rel_parts = path.resolve().relative_to(source_root).parts
+            except ValueError:
+                resolved_rel_parts = ()
+            if any(part in SKIP_NAMES for part in resolved_rel_parts):
+                continue
         # skip files inside known repo dirs; those are handled by scan_repos()
         if rel_parts and rel_parts[0] in known_repo_dirs:
             continue

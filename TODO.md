@@ -57,6 +57,16 @@
       itself over HTTP and reloads when `TODO.html` changes on disk. A project-local
       `PostToolUse` hook in `.claude/settings.local.json` reruns both scripts whenever
       Claude edits `TODO.md`, so the page and the color dots stay in sync automatically.
+- [x] 🟢 Fix `SKIP_NAMES` (`.idea`/`.git`/`.DS_Store` exclusion) leaking IDE
+      housekeeping files into the catalogue via symlinks: a review-mirror
+      symlink under `00_RESEARCH_REVIEW/by_category/` named
+      `.idea __ workspace.xml` isn't itself under a `.idea` path component,
+      but resolves to the real (rightly-excluded) `.idea/workspace.xml` -
+      found via `catalogue.py all --dry-run --limit 30`, which also caught
+      the resulting `verify` failure before it could reach the real catalogue.
+      `iter_source_files()` now also checks a symlink's resolved target
+      against `SKIP_NAMES`, not just its own path.
+
 - [ ] 🟢 Decide whether `researchboss` (the downstream catalogue database project
       mentioned by the user) should consume `catalogue_master.jsonl` directly or
       via an export step.
