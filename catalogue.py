@@ -980,9 +980,20 @@ def cmd_near_duplicates() -> None:
     conn = get_db()
     now = datetime.now(timezone.utc).isoformat()
 
+    # Idempotent: clear prior results first, so a record that no longer
+    # matches under updated logic doesn't keep a stale group assignment.
+    conn.execute(
+        "UPDATE catalogue SET near_duplicate_group_id = NULL, near_duplicate_canonical_id = NULL, "
+        "near_duplicate_score = NULL WHERE near_duplicate_group_id IS NOT NULL"
+    )
+    conn.execute(
+        "UPDATE catalogue SET duplicate_status = 'unresolved' WHERE duplicate_status = 'near_duplicate'"
+    )
+    conn.commit()
+
     rows = conn.execute(
-        "SELECT catalogue_id, file_class, extension, file_size_bytes, content_preview FROM catalogue "
-        "WHERE is_repo_rollup = 0 AND content_preview IS NOT NULL AND content_preview != '' "
+        "SELECT catalogue_id, file_class, extension, file_size_bytes, content_preview, primary_entity_id "
+        "FROM catalogue WHERE is_repo_rollup = 0 AND content_preview IS NOT NULL AND content_preview != '' "
         "AND duplicate_status != 'exact_duplicate'"
     ).fetchall()
 
@@ -990,25 +1001,48 @@ def cmd_near_duplicates() -> None:
     for row in rows:
         buckets.setdefault((row["file_class"], row["extension"]), []).append(row)
 
+    # Bounded prefix, not the full (up to ~500-word) preview: two genuinely
+    # near-duplicate files agree from the start (same title/header row/opening
+    # text); merely same-topic documents diverge quickly. Keeps this "initial
+    # content" comparison fast even for the largest bucket (LIT/.pdf, 453
+    # records - ~102k pairs) without weakening the actual detection.
+    compare_len = 600
+    texts = {r["catalogue_id"]: (r["content_preview"] or "").lower()[:compare_len] for r in rows}
+
     groups_found, flagged = 0, 0
-    for bucket_rows in buckets.values():
+    for (file_class, ext), bucket_rows in buckets.items():
         n = len(bucket_rows)
+        pairs = n * (n - 1) // 2
+        print(f"  near-dup bucket {file_class}/{ext}: {n} records, {pairs} pairs to screen...")
         matched: set[str] = set()
+        checked = 0
         for i in range(n):
             a = bucket_rows[i]
             if a["catalogue_id"] in matched:
                 continue
-            a_text = a["content_preview"].lower()
+            a_text = texts[a["catalogue_id"]]
             size_a = a["file_size_bytes"] or 0
             members = [(a, 1.0)]
+            sm = difflib.SequenceMatcher(None, autojunk=False)
+            sm.set_seq2(a_text)  # fixed side: difflib caches per-char position data for this one
             for j in range(i + 1, n):
                 b = bucket_rows[j]
+                checked += 1
+                if checked % 20000 == 0:
+                    print(f"    ...{checked}/{pairs} pairs screened")
                 if b["catalogue_id"] in matched:
+                    continue
+                # A different confirmed domain entity (container/booking/job
+                # id) means these are two different real-world things, no
+                # matter how similar the template/boilerplate text is - e.g.
+                # two different containers' pack-label PDFs, or two different
+                # COBIT framework versions' seed scripts.
+                if a["primary_entity_id"] and b["primary_entity_id"] and a["primary_entity_id"] != b["primary_entity_id"]:
                     continue
                 size_b = b["file_size_bytes"] or 0
                 if size_a and size_b and max(size_a, size_b) / max(min(size_a, size_b), 1) > NEAR_DUPLICATE_MAX_SIZE_RATIO:
                     continue
-                sm = difflib.SequenceMatcher(None, a_text, b["content_preview"].lower(), autojunk=False)
+                sm.set_seq1(texts[b["catalogue_id"]])
                 if sm.quick_ratio() < NEAR_DUPLICATE_SIMILARITY_THRESHOLD:
                     continue  # quick_ratio() is an upper bound on ratio(), safe to prune on
                 score = sm.ratio()
@@ -1033,6 +1067,8 @@ def cmd_near_duplicates() -> None:
                             (now, member["catalogue_id"]),
                         )
                         flagged += 1
+
+        conn.commit()  # per-bucket, so a kill mid-run doesn't lose finished buckets' work
 
     conn.commit()
     conn.close()
