@@ -960,6 +960,14 @@ REPEAT_SUFFIX_RE = re.compile(r"^(.*?)\s*\((\d+)\)$")
 
 def slugify(text: str, max_words: int = 10, max_len: int = 70) -> str:
     text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+    # Split concatenated camelCase/PascalCase runs and letter<->digit runs into
+    # separate words before collapsing everything else to hyphens, e.g.
+    # "jobManagementReportWorkSchedule29Aug2025" -> "job management report
+    # work schedule 29 aug 2025" rather than one unreadable blob.
+    text = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", text)
+    text = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", " ", text)
+    text = re.sub(r"(?<=[A-Za-z])(?=[0-9])", " ", text)
+    text = re.sub(r"(?<=[0-9])(?=[A-Za-z])", " ", text)
     text = re.sub(r"[^A-Za-z0-9]+", "-", text).strip("-").lower()
     words = [w for w in text.split("-") if w][:max_words]
     slug = "-".join(words)
@@ -1138,7 +1146,10 @@ def cmd_rename_plan(env: dict) -> None:
             if slug:
                 confidence, source = 0.45, "ai_suggested"
         slug_sources[source] += 1
-        slug_part = slug or row["catalogue_id"]
+        # slugify() joins words with "-" internally (used elsewhere, e.g. the
+        # cached short_title column); only at this final assembly point do we
+        # convert to "_" so the whole filename has one separator character.
+        slug_part = (slug or row["catalogue_id"]).replace("-", "_")
 
         # Class-led: standardized/controlled-vocabulary tokens first (quick to
         # scan and group in a flat folder), descriptive/contextual tokens
