@@ -945,6 +945,23 @@ def safe_field(value: str | None, default: str = "UNKNOWN") -> str:
     return value.strip("-") or default
 
 
+def to_au_date_token(document_date: str | None) -> str:
+    """document_date is stored ISO (YYYY-MM-DD/YYYY-MM/YYYY) for sorting and
+    interop; the filename itself uses Australian day-month-year ordering."""
+    if not document_date:
+        return "UNDATED"
+    parts = document_date[:10].split("-")
+    if len(parts) == 3 and all(p.isdigit() for p in parts):
+        year, month, day = parts
+        return f"{day}_{month}_{year}"
+    if len(parts) == 2 and all(p.isdigit() for p in parts):
+        year, month = parts
+        return f"{month}_{year}"
+    if len(parts) == 1 and parts[0].isdigit():
+        return parts[0]
+    return "UNDATED"
+
+
 # Tokens that carry no human meaning and should be stripped from an original
 # filename before it's considered as a naming source: UUIDs, long hex hashes,
 # long pure-digit runs (epoch timestamps), and generic camera/export noise.
@@ -952,6 +969,11 @@ UUID_RE = re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F
 LONG_HEX_RE = re.compile(r"\b[0-9a-fA-F]{16,}\b")
 LONG_DIGIT_RE = re.compile(r"\b\d{9,}\b")
 GENERIC_NOISE_WORDS = {"img", "image", "copy", "final", "zip", "export", "untitled", "scan"}
+
+# Embedded PDF/DOCX title metadata that's a default placeholder, not a real
+# title - e.g. "Document" (common Adobe/Word export default). Treated as if
+# no title were present at all, rather than used verbatim as the slug source.
+GENERIC_TITLE_VALUES = {"document", "untitled", "untitled document", "new document", "presentation1"}
 
 # Matches the " (2)", " (3)" etc. suffix a browser/OS appends when a file of
 # the same name is downloaded/saved again - the signature of a repeat export.
@@ -989,20 +1011,36 @@ def clean_filename_slug(original_filename: str) -> str | None:
     return "-".join(words)[:70]
 
 
-def ai_suggest_slug(api_key: str, original_filename: str, file_class: str, artefact_type: str, content_preview: str | None) -> str | None:
-    """Optional: ask an LLM for a short descriptive slug when neither the
-    embedded title nor the cleaned original filename gives us one. Returns
+def ai_suggest_slug(api_key: str, original_filename: str, file_class: str, artefact_type: str,
+                     content_preview: str | None, deterministic_hint: str | None = None) -> str | None:
+    """Primary path for slug generation (when an api_key is configured and
+    there's no trustworthy embedded title): asks an LLM to understand the
+    *original* filename, not just mechanically split it - correcting typos,
+    ignoring random system-generated ID prefixes, and recovering words a
+    pure regex split gets wrong (e.g. an injected fragment breaking "booking"
+    into "b" + "ooking"). deterministic_hint is the regex-only slug attempt,
+    passed along for the AI to use or discard, not as ground truth. Returns
     None on any failure (missing key, network error, bad response) so the
-    caller falls back to catalogue_id - this is never required for the
-    pipeline to run."""
+    caller falls back to the deterministic hint or catalogue_id - this is
+    never required for the pipeline to run."""
     context = (content_preview or "")[:1500]
+    hint_line = (
+        f"A purely mechanical split of the filename produced: '{deterministic_hint}' - this may be "
+        "wrong, or preserve noise/typos/random ID prefixes from the original name. Use it as a "
+        "hint only, not ground truth.\n"
+        if deterministic_hint else ""
+    )
     prompt = (
         f"Original filename: {original_filename}\n"
         f"File category: {file_class} / {artefact_type}\n"
+        f"{hint_line}"
         f"Content preview: {context}\n\n"
-        "Suggest a short (3-6 word) descriptive filename slug for this research file, "
-        "lowercase, words separated by hyphens, no file extension, no punctuation besides "
-        "hyphens. Reply with only the slug."
+        "Suggest a short (3-6 word) descriptive filename slug for this research file, based on "
+        "what the file actually is. Recover the original filename's intended words even if it has "
+        "typos, missing characters, or a mid-word insertion; ignore random system-generated ID "
+        "prefixes that carry no meaning. Do not invent facts not supported by the filename/content. "
+        "Reply with lowercase words separated by hyphens, no file extension, no punctuation besides "
+        "hyphens, and nothing else."
     )
     payload = json.dumps({
         "model": "gpt-4o-mini",
@@ -1118,7 +1156,7 @@ def cmd_rename_plan(env: dict) -> None:
     ai_used = 0
     slug_sources = Counter()
     for row in rows:
-        date_part = (row["document_date"] or "UNDATED")[:10]
+        date_part = to_au_date_token(row["document_date"])
         cls = row["file_class"] or "OPS"
         org = safe_field(row["source_organisation"])
         system = safe_field(row["source_system"], "NA")
@@ -1130,21 +1168,31 @@ def cmd_rename_plan(env: dict) -> None:
         origin = origin_segment(source_roots, row["source_path"])
 
         slug, confidence, source = None, 0.3, "catalogue_id"
-        if row["title"]:
-            slug = slugify(row["title"])
+        title = (row["title"] or "").strip()
+        if title and title.lower() not in GENERIC_TITLE_VALUES:
+            slug = slugify(title)
             confidence, source = 0.75, "embedded_title"
-        if not slug:
-            slug = clean_filename_slug(row["original_filename"])
-            if slug:
-                confidence, source = 0.5, "original_filename"
-        if not slug and api_key:
+
+        # AI-primary: a trustworthy embedded title wins outright (real
+        # document metadata), but otherwise every record with an api_key
+        # gets an AI pass rather than only the ones the deterministic regex
+        # split fails on - regex can't tell a corrupted/noisy filename from
+        # a good one, only that it produced *some* words.
+        deterministic_hint = clean_filename_slug(row["original_filename"])
+        if source != "embedded_title" and api_key:
             if row["short_title"]:
                 slug = row["short_title"]  # cached from a previous rename-plan run, no API call needed
-            else:
-                slug = ai_suggest_slug(api_key, row["original_filename"], cls, artefact, row["content_preview"])
-                ai_used += 1 if slug else 0
-            if slug:
                 confidence, source = 0.45, "ai_suggested"
+            else:
+                ai_slug = ai_suggest_slug(
+                    api_key, row["original_filename"], cls, artefact, row["content_preview"], deterministic_hint,
+                )
+                ai_used += 1 if ai_slug else 0
+                if ai_slug:
+                    slug, confidence, source = ai_slug, 0.45, "ai_suggested"
+
+        if not slug and deterministic_hint:
+            slug, confidence, source = deterministic_hint, 0.5, "original_filename"
         slug_sources[source] += 1
         # slugify() joins words with "-" internally (used elsewhere, e.g. the
         # cached short_title column); only at this final assembly point do we
@@ -1155,7 +1203,11 @@ def cmd_rename_plan(env: dict) -> None:
         # scan and group in a flat folder), descriptive/contextual tokens
         # (what it's about, company, source directory) last. Single "_" between
         # tokens, whole name upper-cased - only the extension stays as-is.
-        base = f"{cls}_{artefact}_{primary_id}_{date_part}_v01_{status}_{access}_{slug_part}_{org}_{system}_{origin}".upper()
+        # org/system collapse to one token when identical (e.g. dir_org_system
+        # mapping FreightTracker's directory to both org=system=FREIGHTTRACKER)
+        # rather than repeating the same word twice.
+        org_system = org if org == system else f"{org}_{system}"
+        base = f"{cls}_{artefact}_{primary_id}_{date_part}_v01_{status}_{access}_{slug_part}_{org_system}_{origin}".upper()
         candidate = f"{base}.{ext}" if ext else base
 
         # Only genuine SHA-256-verified duplicates get a duplicate marker in the
