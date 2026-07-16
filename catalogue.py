@@ -1184,8 +1184,12 @@ def ai_suggest_slug(api_key: str, original_filename: str, file_class: str, artef
         "unless they're actually part of what the document is (e.g. it's a manifest/inventory that "
         "lists multiple files, or 'file' is part of an established document-type name like 'booking "
         "file' or 'freight file specification') - do not add them just because the word appeared "
-        "somewhere in the original filename. Do not invent facts not supported by the filename/content. "
-        "Reply with lowercase words separated by hyphens, no file extension, no punctuation besides "
+        "somewhere in the original filename. Do not repeat the same word or abbreviation twice in a "
+        "row (e.g. 'imds-imds' or 'imo-imo') - say it once, unless it's a genuine established "
+        "two-word term where repetition is the term itself (e.g. 'ro-ro' for roll-on/roll-off "
+        "shipping, or 'data-data' would be wrong but 'big-data-data-science' is two real, different "
+        "terms that happen to share the word 'data'). Do not invent facts not supported by the "
+        "filename/content. Reply with lowercase words separated by hyphens, no file extension, no punctuation besides "
         "hyphens, and nothing else."
     )
     payload = json.dumps({
@@ -1323,8 +1327,16 @@ def cmd_rename_plan(env: dict) -> None:
         slug, confidence, source = None, 0.3, "catalogue_id"
         title = (row["title"] or "").strip()
         if title and title.lower() not in GENERIC_TITLE_VALUES:
-            slug = slugify(title)
-            confidence, source = 0.75, "embedded_title"
+            title_slug = slugify(title)
+            title_words = title_slug.split("-")
+            # A real human-written title never repeats a word back-to-back;
+            # that pattern means the embedded "title" metadata is actually a
+            # mangled citation/reference code (e.g. "Emerald_IMDS_IMDS613954
+            # 1498..1509"), not trustworthy - fall through to AI instead.
+            has_adjacent_repeat = any(title_words[i] == title_words[i + 1] for i in range(len(title_words) - 1))
+            if not has_adjacent_repeat:
+                slug = title_slug
+                confidence, source = 0.75, "embedded_title"
 
         # AI-primary: a trustworthy embedded title wins outright (real
         # document metadata), but otherwise every record with an api_key
@@ -1357,10 +1369,19 @@ def cmd_rename_plan(env: dict) -> None:
         # (what it's about, company, source directory) last. Single "_" between
         # tokens, whole name upper-cased - only the extension stays as-is.
         # org/system collapse to one token when identical (e.g. dir_org_system
-        # mapping FreightTracker's directory to both org=system=FREIGHTTRACKER)
-        # rather than repeating the same word twice.
-        org_system = org if org == system else f"{org}_{system}"
-        base = f"{cls}_{artefact}_{primary_id}_{date_part}_v01_{status}_{access}_{slug_part}_{org_system}_{origin}".upper()
+        # mapping FreightTracker's directory to both org=system=FREIGHTTRACKER),
+        # and drop either one outright if the slug's own last word already
+        # names it (e.g. an AI slug ending "...data-quantainer" followed by
+        # an org token that's also QUANTAINER) - same word, don't say it twice.
+        slug_last_word = slug_part.rsplit("_", 1)[-1].upper() if slug_part else ""
+        org_system_candidates = [org] if org == system else [org, system]
+        org_system_parts = [p for p in org_system_candidates if p.upper() != slug_last_word]
+        org_system = "_".join(org_system_parts)
+        base_parts = [cls, artefact, primary_id, date_part, "v01", status, access, slug_part]
+        if org_system:
+            base_parts.append(org_system)
+        base_parts.append(origin)
+        base = "_".join(base_parts).upper()
         candidate = f"{base}.{ext}" if ext else base
 
         # Only genuine SHA-256-verified duplicates get a duplicate marker in the
