@@ -37,8 +37,10 @@ Usage:
                                         # needs a look (duplicate flags, low confidence, undecided use)
     python3 catalogue.py apply-rename [--skip-duplicates] [--nested] [--group-literature] [--execute]
                                         # Pass 4: copy sources -> instance/catalogued_files/ under their
-                                        # proposed_filename + a .meta.json sidecar. Dry-run by default
-                                        # (prints the plan); nothing is written until --execute is passed.
+                                        # proposed_filename (no per-file sidecar - catalogue_master.jsonl
+                                        # at the catalogued_files/ root + catalog.html already cover
+                                        # per-file lookup). Dry-run by default (prints the plan); nothing
+                                        # is written until --execute is passed.
                                         # --skip-duplicates omits files flagged duplicate_status=exact_duplicate.
                                         # --nested mirrors each file's original source subdirectory instead
                                         # of the default flat layout. --group-literature carves LIT records
@@ -347,6 +349,23 @@ def iter_source_files(source_root: Path, known_repo_dirs: dict):
     for path in source_root.rglob("*"):
         if not path.is_file():
             continue
+        # Path.is_file() follows symlinks, so a symlink whose target is a
+        # file would otherwise be scanned as its own candidate. This project
+        # has a ~600-symlink "review mirror" tree (00_RESEARCH_REVIEW/by_category/)
+        # whose entries are named after their target's full relative path with
+        # " __ " separators (e.g. "zotero unfiltered files __ My Library __
+        # files __ 200 __ some-paper.pdf") - every target is also reachable via
+        # its own real, direct path elsewhere in the tree, so nothing is lost
+        # by skipping symlinks outright. Scanning them was actively harmful:
+        # rglob()'s traversal order isn't guaranteed, so whichever path (the
+        # real file or its flattened-name mirror alias) got visited first
+        # became the permanent original_filename for that catalogue_id - on
+        # one run that meant hundreds of records recording the mirror's
+        # flattened alias name instead of the file's real name, caught by
+        # `catalogue.py verify`. Skipping symlinks entirely removes the
+        # ordering dependency: only the real, direct path can ever be scanned.
+        if path.is_symlink():
+            continue
         if path.suffix.lower() == ".zip":
             continue
         try:
@@ -355,19 +374,6 @@ def iter_source_files(source_root: Path, known_repo_dirs: dict):
             continue
         if any(part in SKIP_NAMES for part in rel_parts):
             continue
-        # A symlink's own path can dodge the SKIP_NAMES check above while its
-        # resolved target sits inside an excluded directory - e.g. a review-
-        # mirror symlink named ".idea __ workspace.xml" (not itself under any
-        # ".idea" path component) pointing at the real .idea/workspace.xml.
-        # Check the resolved target's path too, so IDE/VCS housekeeping files
-        # can't leak into the catalogue via an alias.
-        if path.is_symlink():
-            try:
-                resolved_rel_parts = path.resolve().relative_to(source_root).parts
-            except ValueError:
-                resolved_rel_parts = ()
-            if any(part in SKIP_NAMES for part in resolved_rel_parts):
-                continue
         # skip files inside known repo dirs; those are handled by scan_repos()
         if rel_parts and rel_parts[0] in known_repo_dirs:
             continue
@@ -733,10 +739,21 @@ def parse_pdf_date(raw: str | None) -> str | None:
         return None
 
 
-def extract_pdf_metadata(path: Path) -> dict:
-    try:
-        import fitz
+try:
+    import fitz
+    PYMUPDF_AVAILABLE = True
+except ImportError:
+    PYMUPDF_AVAILABLE = False
 
+
+def extract_pdf_metadata(path: Path) -> dict:
+    """Without pymupdf (see requirements.txt) this always returns {}, which
+    silently pushes every PDF record through the paid AI slug fallback in
+    rename-plan instead of the free embedded-title path - cmd_enrich() warns
+    once up front if PYMUPDF_AVAILABLE is False so that isn't invisible."""
+    if not PYMUPDF_AVAILABLE:
+        return {}
+    try:
         doc = fitz.open(path)
         meta = dict(doc.metadata or {})
         doc.close()
@@ -811,6 +828,12 @@ def infer_org_system_from_text(text: str, org_name_patterns: list, system_name_p
 
 
 def cmd_enrich(project_config: dict, env: dict) -> None:
+    if not PYMUPDF_AVAILABLE:
+        print(
+            "WARNING: pymupdf not installed - PDF title/author/creation-date metadata will not be "
+            "extracted, so every PDF record will fall through to the paid AI slug fallback in "
+            "rename-plan instead of the free embedded-title path. Run: pip install -r requirements.txt"
+        )
     conn = get_db()
     now = datetime.now(timezone.utc).isoformat()
     rules = load_cataloguing_rules(project_config)
@@ -1969,12 +1992,20 @@ def apply_rename_dest_dir(row: sqlite3.Row, nested: bool, group_literature: bool
 
 def cmd_apply_rename(env: dict, skip_duplicates: bool, nested: bool, group_literature: bool, execute: bool) -> None:
     """Pass 4 (approved rename): copies each source file into
-    instance/catalogued_files/ under its proposed_filename, with a
-    <name>.meta.json sidecar carrying the full catalogue record. Never
-    renames, moves, or deletes the source - copy only. Always a conscious,
-    explicit action: not part of `all`, and dry-run (prints what it would do)
-    unless --execute is passed, so a plan can be reviewed before anything is
+    instance/catalogued_files/ under its proposed_filename. Never renames,
+    moves, or deletes the source - copy only. Always a conscious, explicit
+    action: not part of `all`, and dry-run (prints what it would do) unless
+    --execute is passed, so a plan can be reviewed before anything is
     written to disk.
+
+    No per-file metadata sidecar is written next to each copy - that would
+    mean one extra .json file per research file sitting in the same folder
+    (previously literally doubled the file count in catalogued_files/). The
+    single catalogue_master.jsonl at the root of catalogued_files/ already
+    carries every record's full metadata, and catalog.html (also at that
+    root) already gives per-file lookup for it through a web interface -
+    click any row to expand its full record. That single file is the
+    reference; nothing per-copy is needed alongside it.
 
     Layout is flat by default (everything directly under catalogued_files/).
     --nested mirrors each file's original source subdirectory instead.
@@ -2020,10 +2051,6 @@ def cmd_apply_rename(env: dict, skip_duplicates: bool, nested: bool, group_liter
             already_present += 1
             continue
         shutil.copy2(row["source_path"], dest)
-        meta = {k: row[k] for k in row.keys()}
-        dest.with_name(f"{dest.name}.meta.json").write_text(
-            json.dumps(meta, indent=2, default=str, ensure_ascii=False), encoding="utf-8"
-        )
         conn.execute(
             "UPDATE catalogue SET processing_status = 'renamed', updated_at = ? WHERE catalogue_id = ?",
             (now, row["catalogue_id"]),

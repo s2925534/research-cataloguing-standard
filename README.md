@@ -98,7 +98,9 @@ explicit step:
 ```
 python3 catalogue.py apply-rename                    # dry run: prints the plan, writes nothing
 python3 catalogue.py apply-rename --execute           # copies sources -> instance/catalogued_files/
-                                                        # + a <name>.meta.json sidecar per file
+                                                        # (per-file metadata lookup comes from
+                                                        # catalogue_master.jsonl/catalog.html, not a
+                                                        # sidecar next to each copy)
 ```
 
 `--skip-duplicates` omits files flagged `duplicate_status=exact_duplicate`;

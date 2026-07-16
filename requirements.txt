@@ -1,3 +1,11 @@
 # Optional. Everything else in this project is Python standard library only.
 # Needed only for: python3 catalogue.py validate-schema
 jsonschema>=4
+
+# Recommended, not strictly required: python3 catalogue.py enrich reads embedded
+# PDF title/author/creation-date metadata via this (extract_pdf_metadata()).
+# Without it, every PDF record falls through to the paid AI slug fallback in
+# `rename-plan` instead of the free, higher-confidence embedded-title path -
+# extract_pdf_metadata() degrades silently (catches ImportError, returns {}),
+# so a missing install here is easy to not notice until the API bill shows it.
+pymupdf>=1.24

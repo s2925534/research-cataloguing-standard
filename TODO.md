@@ -14,8 +14,11 @@
       convention, detect same-name collisions, flag likely duplicates for review
       rather than auto-deleting. (`catalogue.py rename-plan`)
 - [x] 🔵 Pass 4 — approved rename: copy files into `instance/catalogued_files/`,
-      write `<name>.meta.json` sidecars, never touch the immutable source.
-      (`catalogue.py apply-rename --execute`)
+      never touch the immutable source. (`catalogue.py apply-rename --execute`)
+      No per-file `.meta.json` sidecar - that doubled the file count in every
+      folder; `catalogue_master.jsonl`/`catalog.html` at the `catalogued_files/`
+      root already give per-file metadata lookup, sidecars were pure
+      redundancy (removed 2026-07-16).
 
 ## Catalogue viewer
 
@@ -57,15 +60,27 @@
       itself over HTTP and reloads when `TODO.html` changes on disk. A project-local
       `PostToolUse` hook in `.claude/settings.local.json` reruns both scripts whenever
       Claude edits `TODO.md`, so the page and the color dots stay in sync automatically.
-- [x] 🟢 Fix `SKIP_NAMES` (`.idea`/`.git`/`.DS_Store` exclusion) leaking IDE
-      housekeeping files into the catalogue via symlinks: a review-mirror
+- [x] 🟢 Fix `iter_source_files()` scanning symlinks at all. First found as a
+      narrower bug via `catalogue.py all --dry-run --limit 30`: a review-mirror
       symlink under `00_RESEARCH_REVIEW/by_category/` named
-      `.idea __ workspace.xml` isn't itself under a `.idea` path component,
-      but resolves to the real (rightly-excluded) `.idea/workspace.xml` -
-      found via `catalogue.py all --dry-run --limit 30`, which also caught
-      the resulting `verify` failure before it could reach the real catalogue.
-      `iter_source_files()` now also checks a symlink's resolved target
-      against `SKIP_NAMES`, not just its own path.
+      `.idea __ workspace.xml` isn't itself under a `.idea` path component, so
+      it dodged `SKIP_NAMES`, but resolved to the real (rightly-excluded)
+      `.idea/workspace.xml`. Patched then to also check a symlink's resolved
+      target against `SKIP_NAMES`.
+      That patch turned out to be too narrow: a full from-scratch `all` run
+      (2026-07-16) hit the same 00_RESEARCH_REVIEW mirror (~600 symlinks,
+      each named after its target's full relative path with " __ "
+      separators) at scale - `rglob()`'s traversal order isn't guaranteed, so
+      for ~466 records the mirror's flattened-name symlink got scanned
+      *before* the real file, permanently recording the mirror's alias as
+      `original_filename` instead of the real name (caught by `verify`; also
+      silently broke the deterministic embedded-title slug heuristic for
+      every affected record, forcing 906/906 rename-plan slugs through the
+      paid AI fallback instead of the expected ~60/40 split). Confirmed all
+      623 symlinks in the source tree live under 00_RESEARCH_REVIEW and every
+      target is independently reachable via its own real path, so
+      `iter_source_files()` now skips symlinks outright rather than
+      special-casing what they resolve to.
 
 - [ ] 🟢 Decide whether `researchboss` (the downstream catalogue database project
       mentioned by the user) should consume `catalogue_master.jsonl` directly or
