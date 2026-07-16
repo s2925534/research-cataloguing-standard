@@ -22,7 +22,8 @@ Usage:
     python3 catalogue.py duplicates    # group by hash, flag exact duplicates
     python3 catalogue.py rename-plan   # Pass 3: propose filenames, write rename_plan.csv (no renaming)
     python3 catalogue.py export-jsonl  # refresh catalogue_master.jsonl from the DB
-    python3 catalogue.py all           # scan + extract + enrich + duplicates + rename-plan + export + stats
+    python3 catalogue.py verify        # data-integrity regression check (filename/path consistency)
+    python3 catalogue.py all           # scan + extract + enrich + duplicates + rename-plan + export + verify + stats
     python3 catalogue.py stats         # summary counts
 """
 from __future__ import annotations
@@ -1071,6 +1072,42 @@ def cmd_export_jsonl() -> None:
     print(f"Exported {len(rows)} records -> {JSONL_PATH.relative_to(ROOT_DIR)}")
 
 
+def cmd_verify() -> None:
+    """Data-integrity regression guard. Catches classes of bug like the one
+    found 2026-07-16: original_filename silently drifting from the real
+    basename of source_path across rewrites of the scan logic, because scan()
+    skips already-inventoried rows and never re-derives already-stored fields."""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT catalogue_id, original_filename, source_path, proposed_filename "
+        "FROM catalogue WHERE is_repo_rollup = 0"
+    ).fetchall()
+
+    problems = []
+    seen_names: dict[str, str] = {}
+    for row in rows:
+        real_name = Path(row["source_path"]).name
+        if real_name != row["original_filename"]:
+            problems.append(f"{row['catalogue_id']}: original_filename != basename(source_path)")
+        if not Path(row["source_path"]).exists():
+            problems.append(f"{row['catalogue_id']}: source_path no longer exists on disk")
+        if row["proposed_filename"]:
+            prior = seen_names.get(row["proposed_filename"])
+            if prior:
+                problems.append(f"{row['catalogue_id']}: proposed_filename collides with {prior}")
+            seen_names[row["proposed_filename"]] = row["catalogue_id"]
+
+    conn.close()
+    if problems:
+        print(f"verify FAILED: {len(problems)} problem(s) found:")
+        for p in problems[:50]:
+            print(f"  - {p}")
+        if len(problems) > 50:
+            print(f"  ... and {len(problems) - 50} more")
+    else:
+        print(f"verify passed: {len(rows)} records, no filename/path integrity problems found.")
+
+
 def cmd_stats() -> None:
     conn = get_db()
     total = conn.execute("SELECT COUNT(*) c FROM catalogue").fetchone()["c"]
@@ -1126,6 +1163,8 @@ def main() -> int:
         cmd_rename_plan(env)
     elif command == "export-jsonl":
         cmd_export_jsonl()
+    elif command == "verify":
+        cmd_verify()
     elif command == "stats":
         cmd_stats()
     elif command == "all":
@@ -1135,6 +1174,7 @@ def main() -> int:
         cmd_duplicates()
         cmd_rename_plan(env)
         cmd_export_jsonl()
+        cmd_verify()
         cmd_stats()
     else:
         print(f"Unknown command: {command}")
