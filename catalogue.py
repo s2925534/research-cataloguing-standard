@@ -1481,7 +1481,7 @@ def cmd_rename_plan(env: dict) -> None:
             "review_notes = ?, short_title = ?, updated_at = ? WHERE catalogue_id = ?",
             (candidate, confidence, review_note, short_title, now, row["catalogue_id"]),
         )
-        plan_rows.append((row["catalogue_id"], row["original_filename"], row["source_path"], candidate, source,
+        plan_rows.append((row["catalogue_id"], row["original_filename"], candidate, row["source_path"], source,
                           row["source_group_id"]))
 
     conn.commit()
@@ -1489,7 +1489,9 @@ def cmd_rename_plan(env: dict) -> None:
 
     with RENAME_PLAN_PATH.open("w", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh)
-        writer.writerow(["catalogue_id", "original_filename", "source_path", "proposed_filename", "slug_source",
+        # proposed_filename sits right next to original_filename (not after
+        # the long source_path) so before/after is easy to compare at a glance.
+        writer.writerow(["catalogue_id", "original_filename", "proposed_filename", "source_path", "slug_source",
                          "source_group_id"])
         writer.writerows(plan_rows)
 
