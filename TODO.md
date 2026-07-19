@@ -89,6 +89,21 @@
       `iter_source_files()` now skips symlinks outright rather than
       special-casing what they resolve to.
 
-- [ ] 🟢 Decide whether `researchboss` (the downstream catalogue database project
-      mentioned by the user) should consume `catalogue_master.jsonl` directly or
-      via an export step.
+- [ ] 🟢 Downstream integration note (from Ledgerly/ResearchBoss's own TODO.md
+      Phase 33, added 2026-07-17 — resolves the earlier stub item above about
+      a "downstream catalogue database project"): Ledgerly, a separate sibling
+      project (`~/Documents/_Projects/ResearchBoss`), plans to drive this
+      project non-interactively per its own hosted user — staging that user's
+      connected cloud folder (OneDrive/Google Drive/Dropbox) to a local
+      directory, then invoking `catalogue.py` (`scan` → `extract` → `enrich`
+      → `duplicates`/`near-duplicates` → `rename-plan` → `review-queue` →
+      `export-jsonl`) as a subprocess against a per-caller `instance/`-style
+      directory, then reading the resulting `catalogue_master.jsonl` directly
+      (decided: no separate export step needed, it's already the canonical
+      machine-readable output) to import catalogued files as citable sources.
+      Nothing to build here yet and no behavior change — this project keeps
+      running exactly as it does today (single shared `instance/`, run by
+      hand, no accounts, no cloud). Flagging only so a future need for
+      per-caller `instance/` directories (today assumes one shared instance)
+      and a stable/documented subprocess exit-code contract isn't a surprise
+      if/when Ledgerly's side of that integration gets built.
