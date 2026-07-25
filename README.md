@@ -395,6 +395,39 @@ bytes alone whether, say, a PDF is a native export or a scan. As with
 CERIF/RO-Crate, the creator name only comes from `project_config.json` ->
 `researcher` when genuinely configured.
 
+### MARC 21 catalogue mode (`--marc21`)
+
+`marc21_catalogue.py` implements MARC 21 bibliographic records - the most
+structurally rigid standard here: a byte-exact 24-position Leader and
+40-character 008 control field, plus tagged/indicatored variable fields.
+Like Dublin Core/DataCite/MODS, it describes every catalogued file. Its own
+database is `instance/catalogue_marc21.db`; its own output directory is
+`instance/catalogued_files/marc21/`.
+
+```
+python3 catalogue.py scan --marc21 --dry-run|--apply
+python3 catalogue.py migrate --marc21 --dry-run|--apply
+python3 catalogue.py validate --marc21
+python3 catalogue.py export --marc21   # writes marc21_catalogue.csv/json,
+                                        # marc21_catalogue.mrk (one real MARC mnemonic
+                                        # ".mrk" record per file - the MarcEdit/MARCMaker
+                                        # interchange text format), catalogue_schema.json,
+                                        # catalogue_manual_review.csv, catalogue_migration_log.csv
+```
+
+Every Leader/008 position this engine cannot honestly derive uses MARC's
+own sanctioned `|` "no attempt to code" fill character, never a fabricated
+value - e.g. Leader/17 (encoding level) is `u` Unknown (honest for a
+machine-generated, unreviewed record), 008/35-37 (language) is `und`
+(Undetermined, the correct ISO 639-2 code for "language unknown"), and
+008/39 (cataloging source) is `d` Other. `020`/`022`/`024` (ISBN/ISSN/other
+standard identifiers) only ever come from an explicit `<file>.marc21.json`
+sidecar, since those are formally assigned identifiers. `245` (title
+statement)'s indicator 2 - MARC's real "number of nonfiling characters"
+convention for leading articles like "The"/"A"/"An" - is computed, not
+hardcoded. `100`/`700` (personal names) only appear when
+`project_config.json` -> `researcher` is genuinely configured.
+
 ## Key principle (unchanged from the original standard)
 
 Do not encode every detail in filenames. Use filenames for quick
