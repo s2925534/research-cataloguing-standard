@@ -460,6 +460,45 @@ complication. `fileSec/file` entries carry a real SHA-256
 METS deployments typically point `techMD` at a full PREMIS object instead,
 which this project's own `--premis` mode can independently produce.
 
+### PREMIS catalogue mode (`--premis`)
+
+`premis_catalogue.py` implements preservation metadata - the one mode here
+that is structurally different from all nine others: preservation metadata
+is fundamentally an append-only *event log* over time, not just a per-file
+snapshot. Its own database is `instance/catalogue_premis.db`, holding two
+tables (`premis_objects` and `premis_events`); its own output directory is
+`instance/catalogued_files/premis/`.
+
+```
+python3 catalogue.py scan --premis --dry-run|--apply
+python3 catalogue.py migrate --premis --dry-run|--apply
+python3 catalogue.py validate --premis
+python3 catalogue.py export --premis   # writes premis_objects.csv/json,
+                                        # premis_events.csv/json, premis_xml/<catalogue_id>.xml
+                                        # (one real PREMIS 3.0 XML document per object, with its
+                                        # related events and the tool's own agent record nested
+                                        # inside for single-file readability), catalogue_schema.json,
+                                        # catalogue_manual_review.csv, catalogue_migration_log.csv
+```
+
+`scan --premis --apply` logs an "ingestion" event the first time a file is
+seen, and a "fixity check" event every subsequent time it's re-scanned -
+recomputing the SHA-256 and comparing it to the last known value: outcome
+`success` if unchanged, `warning` if the content has drifted since the last
+check (and the object's fixity is updated accordingly). This means **object
+identity stays stable across rescans but the event log genuinely grows** -
+the one place across these ten modules where "idempotent" does not mean
+"nothing changes on rerun"; a repeated fixity check *is* the point.
+`migrate --premis` logs a separate "migration" event, but only when a
+file's technical characteristics (format) actually change, so it never
+duplicates scan's fixity checking. `creating_application` defaults to
+"Unknown" and `preservation_level` to "Not Assigned" - the latter is a real
+PREMIS concept representing an institutional preservation *commitment*
+this engine has no authority to assign on its own. `format_name` uses the
+file's MIME type rather than a resolved PRONOM PUID, since PRONOM
+identification needs file-signature analysis against a format registry
+this project doesn't have access to.
+
 ## Key principle (unchanged from the original standard)
 
 Do not encode every detail in filenames. Use filenames for quick
