@@ -79,7 +79,7 @@ docstring (dsr_catalogue.py, dublin_core_catalogue.py, ...) for details.
     python3 catalogue.py update-references <flag> [--dry-run|--apply]
                                         # DSR only for now - no-op unless
                                         # project_config.json -> dsr_reference_roots is set
-  where <flag> is one of: --dsr, --dublin-core, --datacite, --crossref, --cerif, --ro-crate, --dcat
+  where <flag> is one of: --dsr, --dublin-core, --datacite, --crossref, --cerif, --ro-crate, --dcat, --mods
 """
 from __future__ import annotations
 
@@ -108,6 +108,7 @@ import datacite_catalogue
 import dcat_catalogue
 import dsr_catalogue
 import dublin_core_catalogue
+import mods_catalogue
 import ro_crate_catalogue
 
 # Registry of standard-specific catalogue modules, each implementing the same
@@ -125,6 +126,7 @@ STANDARD_CATALOGUE_MODULES = {
     "--cerif": cerif_catalogue,
     "--ro-crate": ro_crate_catalogue,
     "--dcat": dcat_catalogue,
+    "--mods": mods_catalogue,
 }
 
 ROOT_DIR = Path(__file__).resolve().parent

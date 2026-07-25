@@ -362,6 +362,39 @@ reasoning as `--datacite`); `issued` is a proxy from the file's creation
 timestamp and is always flagged Requires Review, since a filesystem
 timestamp is not a true issuance date.
 
+### MODS catalogue mode (`--mods`)
+
+`mods_catalogue.py` implements the Library of Congress's Metadata Object
+Description Schema - richer bibliographic description than Dublin Core,
+less complex than MARC 21. Like Dublin Core and DataCite, it describes
+every catalogued file (no applicability-gating). Its own database is
+`instance/catalogue_mods.db`; its own output directory is
+`instance/catalogued_files/mods/`.
+
+```
+python3 catalogue.py scan --mods --dry-run|--apply
+python3 catalogue.py migrate --mods --dry-run|--apply
+python3 catalogue.py validate --mods
+python3 catalogue.py export --mods   # writes mods_catalogue.csv/json,
+                                      # mods_xml/<catalogue_id>.xml (one real MODS 3.7
+                                      # XML record per file, in the Library of Congress's
+                                      # http://www.loc.gov/mods/v3 namespace),
+                                      # catalogue_schema.json, catalogue_manual_review.csv,
+                                      # catalogue_migration_log.csv
+```
+
+`typeOfResource` comes from MODS's controlled vocabulary via file
+extension; `extent` is a digital-native "`<N> bytes`" statement;
+`identifier` is content-addressed (`urn:mods:sha256:<hash>`,
+`type="local"`); `recordInfo` documents the record's own machine-generated
+provenance (a factual statement about how the record was produced, not
+invented data about the file). `digitalOrigin` (born-digital vs digitized)
+is deliberately omitted rather than guessed - MODS's controlled vocabulary
+for it has no "Unknown" value, and this engine cannot tell from a file's
+bytes alone whether, say, a PDF is a native export or a scan. As with
+CERIF/RO-Crate, the creator name only comes from `project_config.json` ->
+`researcher` when genuinely configured.
+
 ## Key principle (unchanged from the original standard)
 
 Do not encode every detail in filenames. Use filenames for quick
