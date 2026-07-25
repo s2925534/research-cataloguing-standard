@@ -181,7 +181,7 @@ class SidecarMetadataTests(unittest.TestCase):
 
 
 class ScanIntegrationTests(unittest.TestCase):
-    """Exercises cmd_dsr_scan end-to-end against a disposable source tree and
+    """Exercises cmd_scan end-to-end against a disposable source tree and
     a disposable DSR db/output dir (module constants monkeypatched, restored
     in tearDown) - the real instance/ is never touched."""
 
@@ -230,11 +230,11 @@ class ScanIntegrationTests(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_dry_run_does_not_create_real_db(self):
-        dsr.cmd_dsr_scan(self.project_config, self.env, dry_run=True, apply=False)
+        dsr.cmd_scan(self.project_config, self.env, dry_run=True, apply=False)
         self.assertFalse(dsr.DSR_DB_PATH.exists())
 
     def test_apply_scan_catalogues_two_files_and_skips_node_modules(self):
-        dsr.cmd_dsr_scan(self.project_config, self.env, dry_run=False, apply=True)
+        dsr.cmd_scan(self.project_config, self.env, dry_run=False, apply=True)
         conn = dsr.get_dsr_db()
         rows = conn.execute("SELECT * FROM dsr_catalogue").fetchall()
         conn.close()
@@ -250,13 +250,13 @@ class ScanIntegrationTests(unittest.TestCase):
         self.assertEqual(model_row["catalogue_id"], f"{model_row['stable_id']}-V1.0")
 
     def test_scan_is_idempotent(self):
-        dsr.cmd_dsr_scan(self.project_config, self.env, dry_run=False, apply=True)
+        dsr.cmd_scan(self.project_config, self.env, dry_run=False, apply=True)
         conn = dsr.get_dsr_db()
         first_count = conn.execute("SELECT COUNT(*) AS c FROM dsr_catalogue").fetchone()["c"]
         first_ids = {r["catalogue_id"] for r in conn.execute("SELECT catalogue_id FROM dsr_catalogue").fetchall()}
         conn.close()
 
-        dsr.cmd_dsr_scan(self.project_config, self.env, dry_run=False, apply=True)
+        dsr.cmd_scan(self.project_config, self.env, dry_run=False, apply=True)
         conn = dsr.get_dsr_db()
         second_count = conn.execute("SELECT COUNT(*) AS c FROM dsr_catalogue").fetchone()["c"]
         second_ids = {r["catalogue_id"] for r in conn.execute("SELECT catalogue_id FROM dsr_catalogue").fetchall()}
@@ -266,7 +266,7 @@ class ScanIntegrationTests(unittest.TestCase):
         self.assertEqual(first_ids, second_ids)
 
     def test_stable_id_survives_file_rename(self):
-        dsr.cmd_dsr_scan(self.project_config, self.env, dry_run=False, apply=True)
+        dsr.cmd_scan(self.project_config, self.env, dry_run=False, apply=True)
         conn = dsr.get_dsr_db()
         before = conn.execute(
             "SELECT stable_id, source_path FROM dsr_catalogue WHERE file_name = 'data.csv'"
@@ -283,15 +283,15 @@ class ScanIntegrationTests(unittest.TestCase):
         # occurs and that stable-id counters keep incrementing safely, while
         # documenting the current identity-tracking limitation (source_path,
         # not inode/basename) noted in dsr_catalogue.py's docstring.
-        dsr.cmd_dsr_scan(self.project_config, self.env, dry_run=False, apply=True)
+        dsr.cmd_scan(self.project_config, self.env, dry_run=False, apply=True)
         conn = dsr.get_dsr_db()
         rows = conn.execute("SELECT * FROM dsr_catalogue WHERE file_name = 'renamed-data.csv'").fetchall()
         conn.close()
         self.assertEqual(len(rows), 1)
 
     def test_export_writes_all_required_outputs(self):
-        dsr.cmd_dsr_scan(self.project_config, self.env, dry_run=False, apply=True)
-        dsr.cmd_dsr_export(self.project_config, self.env)
+        dsr.cmd_scan(self.project_config, self.env, dry_run=False, apply=True)
+        dsr.cmd_export(self.project_config, self.env)
         for path in (
             dsr.DSR_RESEARCH_CATALOGUE_CSV, dsr.DSR_RESEARCH_CATALOGUE_JSON, dsr.DSR_RESEARCH_CATALOGUE_MD,
             dsr.DSR_RESEARCH_CATALOGUE_SQLITE, dsr.DSR_RELATIONSHIPS_CSV, dsr.DSR_SCHEMA_JSON,
@@ -301,12 +301,12 @@ class ScanIntegrationTests(unittest.TestCase):
             self.assertTrue(path.exists(), f"missing output: {path}")
 
     def test_validate_reports_no_structural_issues_on_clean_scan(self):
-        dsr.cmd_dsr_scan(self.project_config, self.env, dry_run=False, apply=True)
-        dsr.cmd_dsr_validate(self.project_config, self.env)  # should not raise
+        dsr.cmd_scan(self.project_config, self.env, dry_run=False, apply=True)
+        dsr.cmd_validate(self.project_config, self.env)  # should not raise
 
     def test_duplicate_content_is_flagged_not_auto_merged(self):
         (self.source_root / "artefacts" / "process-model-copy-v1.md").write_text("model spec", encoding="utf-8")
-        dsr.cmd_dsr_scan(self.project_config, self.env, dry_run=False, apply=True)
+        dsr.cmd_scan(self.project_config, self.env, dry_run=False, apply=True)
         conn = dsr.get_dsr_db()
         rows = conn.execute("SELECT * FROM dsr_catalogue WHERE file_name LIKE 'process-model%'").fetchall()
         conn.close()
@@ -320,7 +320,7 @@ class ScanIntegrationTests(unittest.TestCase):
 class UpdateReferencesTests(unittest.TestCase):
     def test_noop_without_configured_roots(self):
         # No dsr_reference_roots configured -> must not touch anything.
-        dsr.cmd_dsr_update_references({"project_id": "x"}, {}, dry_run=True, apply=False)  # should not raise
+        dsr.cmd_update_references({"project_id": "x"}, {}, dry_run=True, apply=False)  # should not raise
 
 
 if __name__ == "__main__":

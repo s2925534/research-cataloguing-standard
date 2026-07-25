@@ -63,20 +63,23 @@ Usage:
                                         # after scan, so the rest of the pipeline only processes N records.
     python3 catalogue.py stats         # summary counts
 
-DSR (Design Science Research) catalogue mode - see dsr_catalogue.py:
-    Fully separate pipeline: its own database (instance/catalogue_dsr.db) and
-    output directory (instance/catalogued_files/dsr/). Never opens or writes
-    instance/catalogue.db or the legacy instance/catalogued_files/ outputs
-    above - the legacy catalogue is unaffected whether or not --dsr is ever used.
-    python3 catalogue.py scan --dsr [--dry-run|--apply]
-    python3 catalogue.py migrate --dsr [--dry-run|--apply]
-                                        # re-classify already-scanned DSR records
-                                        # against current rules (no filesystem walk)
-    python3 catalogue.py validate --dsr
-    python3 catalogue.py export --dsr
-    python3 catalogue.py update-references --dsr [--dry-run|--apply]
-                                        # no-op unless project_config.json ->
-                                        # dsr_reference_roots is set
+Standard-specific catalogue modes - one flag per external metadata/cataloguing
+standard, each a fully separate pipeline (own database under instance/, own
+output directory under instance/catalogued_files/<name>/). None of them ever
+opens instance/catalogue.db or another standard's database/output directory -
+the legacy catalogue above is unaffected whether or not any of these flags are
+ever used. See STANDARD_CATALOGUE_MODULES in this file and each module's own
+docstring (dsr_catalogue.py, dublin_core_catalogue.py, ...) for details.
+    python3 catalogue.py scan <flag> [--dry-run|--apply]
+    python3 catalogue.py migrate <flag> [--dry-run|--apply]
+                                        # re-classify already-scanned records against
+                                        # current rules (no filesystem walk)
+    python3 catalogue.py validate <flag>
+    python3 catalogue.py export <flag>
+    python3 catalogue.py update-references <flag> [--dry-run|--apply]
+                                        # DSR only for now - no-op unless
+                                        # project_config.json -> dsr_reference_roots is set
+  where <flag> is one of: --dsr, --dublin-core
 """
 from __future__ import annotations
 
@@ -100,6 +103,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import dsr_catalogue
+import dublin_core_catalogue
+
+# Registry of standard-specific catalogue modules, each implementing the same
+# cmd_scan/cmd_migrate/cmd_validate/cmd_export(project_config, env, ...)
+# surface (see dsr_catalogue.py / dublin_core_catalogue.py). Adding a new
+# standard module only requires one entry here - main()'s dispatch below
+# never needs to grow. Every module is a fully isolated pipeline (own
+# database, own output directory); this file only ever routes to them, it
+# never touches their storage directly.
+STANDARD_CATALOGUE_MODULES = {
+    "--dsr": dsr_catalogue,
+    "--dublin-core": dublin_core_catalogue,
+}
 
 ROOT_DIR = Path(__file__).resolve().parent
 TEMPLATES_DIR = ROOT_DIR / "templates"
@@ -2238,36 +2254,40 @@ def main() -> int:
     env = load_env()
     CATALOGUE_DIR.mkdir(parents=True, exist_ok=True)
 
-    if command == "scan":
+    if command in ("scan", "migrate", "validate", "export", "update-references"):
         args = sys.argv[2:]
-        if "--dsr" in args:
-            dsr_catalogue.cmd_dsr_scan(project_config, env, dry_run="--dry-run" in args, apply="--apply" in args)
-        else:
-            cmd_scan(project_config, env)
-    elif command == "migrate":
-        args = sys.argv[2:]
-        if "--dsr" not in args:
-            print("Unknown command: migrate (DSR-only - pass --dsr; legacy equivalent is rename-plan/apply-rename)")
+        matched = [flag for flag in STANDARD_CATALOGUE_MODULES if flag in args]
+        module = STANDARD_CATALOGUE_MODULES[matched[0]] if matched else None
+
+        if command == "scan":
+            if module:
+                module.cmd_scan(project_config, env, dry_run="--dry-run" in args, apply="--apply" in args)
+            else:
+                cmd_scan(project_config, env)
+            return 0
+
+        if not module:
+            legacy_hint = {
+                "migrate": "legacy equivalent is rename-plan/apply-rename",
+                "validate": "legacy equivalent is validate-schema",
+                "export": "legacy equivalent is export-jsonl",
+                "update-references": "no legacy equivalent",
+            }[command]
+            flags = ", ".join(STANDARD_CATALOGUE_MODULES)
+            print(f"Unknown command: {command} (pass one of: {flags}; {legacy_hint})")
             return 1
-        dsr_catalogue.cmd_dsr_migrate(project_config, env, dry_run="--dry-run" in args, apply="--apply" in args)
-    elif command == "validate":
-        args = sys.argv[2:]
-        if "--dsr" not in args:
-            print("Unknown command: validate (DSR-only - pass --dsr; legacy equivalent is validate-schema)")
-            return 1
-        dsr_catalogue.cmd_dsr_validate(project_config, env)
-    elif command == "export":
-        args = sys.argv[2:]
-        if "--dsr" not in args:
-            print("Unknown command: export (DSR-only - pass --dsr; legacy equivalent is export-jsonl)")
-            return 1
-        dsr_catalogue.cmd_dsr_export(project_config, env)
-    elif command == "update-references":
-        args = sys.argv[2:]
-        if "--dsr" not in args:
-            print("Unknown command: update-references (DSR-only - pass --dsr)")
-            return 1
-        dsr_catalogue.cmd_dsr_update_references(project_config, env, dry_run="--dry-run" in args, apply="--apply" in args)
+
+        if command == "migrate":
+            module.cmd_migrate(project_config, env, dry_run="--dry-run" in args, apply="--apply" in args)
+        elif command == "validate":
+            module.cmd_validate(project_config, env)
+        elif command == "export":
+            module.cmd_export(project_config, env)
+        elif command == "update-references":
+            if not hasattr(module, "cmd_update_references"):
+                print(f"Unknown command: update-references (not implemented for {matched[0]})")
+                return 1
+            module.cmd_update_references(project_config, env, dry_run="--dry-run" in args, apply="--apply" in args)
     elif command == "extract":
         cmd_extract(project_config)
     elif command == "enrich":

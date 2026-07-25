@@ -118,7 +118,27 @@ a browser for a searchable/sortable table view of the catalogue - it needs
 to be served over http, not opened as a `file://` URL, e.g. `python3 -m
 http.server` from that folder.
 
-## DSR catalogue mode (`--dsr`)
+## Standard-specific catalogue modes
+
+Alongside the primary engine above, `catalogue.py` can run one of several
+external metadata/cataloguing standards as an alternate catalogue profile,
+one flag per standard (see `STANDARD_CATALOGUE_MODULES` in `catalogue.py`).
+Every one of these is a fully separate, additive pipeline: its own database
+under `instance/`, its own output directory under
+`instance/catalogued_files/<name>/`, and its own `scan`/`migrate`/`validate`/
+`export` commands. None of them ever opens `instance/catalogue.db` or another
+standard's database/output directory - the primary engine and every other
+standard's catalogue are unaffected whichever of these flags you use.
+
+```
+python3 catalogue.py scan <flag> --dry-run|--apply
+python3 catalogue.py migrate <flag> --dry-run|--apply   # re-classify already-scanned
+                                                         # records, no filesystem walk
+python3 catalogue.py validate <flag>
+python3 catalogue.py export <flag>
+```
+
+### DSR catalogue mode (`--dsr`)
 
 `dsr_catalogue.py` implements an alternate, Design Science Research-specific
 cataloguing standard, activated with `--dsr`. It is a fully separate
@@ -155,6 +175,36 @@ never invents metadata: anything it cannot derive is recorded as `Unknown`,
 `dsr_catalogue.py`'s module docstring for the full decision order, and
 `templates/project_config.template.json` -> `dsr_catalogue_rules` /
 `dsr_reference_roots` for the (optional) project-specific overrides.
+
+### Dublin Core catalogue mode (`--dublin-core`)
+
+`dublin_core_catalogue.py` implements the Dublin Core Metadata Element Set
+(the 15 core elements) plus the handful of DCTERMS refinements most commonly
+used alongside them (`created`, `modified`, `extent`, `isPartOf`, `hasPart`,
+`isVersionOf`, `hasVersion`, `conformsTo`, `license`, `accessRights`). Its own
+database is `instance/catalogue_dublin_core.db`; its own output directory is
+`instance/catalogued_files/dublin_core/`.
+
+```
+python3 catalogue.py scan --dublin-core --dry-run|--apply
+python3 catalogue.py migrate --dublin-core --dry-run|--apply
+python3 catalogue.py validate --dublin-core
+python3 catalogue.py export --dublin-core   # writes dublin_core_catalogue.csv/json,
+                                             # dublin_core_catalogue.xml (OAI simple-DC),
+                                             # catalogue_schema.json, catalogue_manual_review.csv,
+                                             # catalogue_migration_log.csv
+```
+
+Unlike DSR, Dublin Core is a flat description vocabulary, not a
+classification taxonomy - there's no artefact-type decision tree, just
+deterministic per-element derivation: `dc:identifier` is a content-addressed
+`urn:sha256:<hash>` (stable across renames, since it depends only on file
+content), `dc:type` comes from the DCMI Type Vocabulary via file extension,
+`dc:format` is the file's MIME type, and `dc:date`/`dcterms:created`/
+`dcterms:modified` come from filesystem timestamps. Elements this engine
+can't deterministically derive (`creator`, `subject`, `description`,
+`publisher`, `rights`, etc.) default to `Unknown`/empty rather than being
+invented, unless a `<file>.dcmeta.json` sidecar supplies them explicitly.
 
 ## Key principle (unchanged from the original standard)
 

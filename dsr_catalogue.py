@@ -711,7 +711,7 @@ def _run_scan(conn: sqlite3.Connection, project_config: dict, env: dict, rules: 
     return {"scanned": scanned, "excluded": excluded_count, "ambiguous": ambiguous, "by_class": dict(by_class)}
 
 
-def cmd_dsr_scan(project_config: dict, env: dict, dry_run: bool, apply: bool) -> None:
+def cmd_scan(project_config: dict, env: dict, dry_run: bool, apply: bool) -> None:
     if dry_run == apply:
         raise SystemExit("scan --dsr requires exactly one of --dry-run or --apply")
     rules = load_dsr_rules(project_config)
@@ -786,7 +786,7 @@ def _run_migrate(conn: sqlite3.Connection, rules: dict) -> list[dict]:
     return changes
 
 
-def cmd_dsr_migrate(project_config: dict, env: dict, dry_run: bool, apply: bool) -> None:
+def cmd_migrate(project_config: dict, env: dict, dry_run: bool, apply: bool) -> None:
     if dry_run == apply:
         raise SystemExit("migrate --dsr requires exactly one of --dry-run or --apply")
     rules = load_dsr_rules(project_config)
@@ -829,7 +829,7 @@ def _write_migration_log(changes: list[dict]) -> None:
 # Validate
 # --------------------------------------------------------------------------
 
-def cmd_dsr_validate(project_config: dict, env: dict) -> None:
+def cmd_validate(project_config: dict, env: dict) -> None:
     if not DSR_DB_PATH.exists():
         print(f"{display_path(DSR_DB_PATH)} does not exist yet - run `scan --dsr --apply` first.")
         return
@@ -907,7 +907,7 @@ def _dsr_row_to_record(row: sqlite3.Row) -> dict:
     return record
 
 
-def cmd_dsr_export(project_config: dict, env: dict) -> None:
+def cmd_export(project_config: dict, env: dict) -> None:
     if not DSR_DB_PATH.exists():
         print(f"{display_path(DSR_DB_PATH)} does not exist yet - run `scan --dsr --apply` first.")
         return
@@ -1014,7 +1014,7 @@ def _format_reference(row: sqlite3.Row) -> str:
     return f"{title} ({row['catalogue_id']})"
 
 
-def cmd_dsr_update_references(project_config: dict, env: dict, dry_run: bool, apply: bool) -> None:
+def cmd_update_references(project_config: dict, env: dict, dry_run: bool, apply: bool) -> None:
     if dry_run == apply:
         raise SystemExit("update-references --dsr requires exactly one of --dry-run or --apply")
     roots = project_config.get("dsr_reference_roots", [])
