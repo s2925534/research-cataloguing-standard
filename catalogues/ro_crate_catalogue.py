@@ -40,7 +40,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-import catalogue_common as common
+from . import catalogue_common as common
 
 DB_PATH = common.INSTANCE_DIR / "catalogue_ro_crate.db"
 OUTPUT_DIR = common.CATALOGUE_DIR / "ro_crate"

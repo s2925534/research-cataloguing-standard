@@ -69,7 +69,8 @@ output directory under instance/catalogued_files/<name>/). None of them ever
 opens instance/catalogue.db or another standard's database/output directory -
 the legacy catalogue above is unaffected whether or not any of these flags are
 ever used. See STANDARD_CATALOGUE_MODULES in this file and each module's own
-docstring (dsr_catalogue.py, dublin_core_catalogue.py, ...) for details.
+docstring (catalogues/dsr_catalogue.py, catalogues/dublin_core_catalogue.py,
+...) for details.
     python3 catalogue.py scan <flag> [--dry-run|--apply]
     python3 catalogue.py migrate <flag> [--dry-run|--apply]
                                         # re-classify already-scanned records against
@@ -102,25 +103,27 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
-import cerif_catalogue
-import crossref_catalogue
-import datacite_catalogue
-import dcat_catalogue
-import dsr_catalogue
-import dublin_core_catalogue
-import marc21_catalogue
-import mets_catalogue
-import mods_catalogue
-import premis_catalogue
-import ro_crate_catalogue
+from catalogues import (
+    cerif_catalogue,
+    crossref_catalogue,
+    datacite_catalogue,
+    dcat_catalogue,
+    dsr_catalogue,
+    dublin_core_catalogue,
+    marc21_catalogue,
+    mets_catalogue,
+    mods_catalogue,
+    premis_catalogue,
+    ro_crate_catalogue,
+)
 
 # Registry of standard-specific catalogue modules, each implementing the same
 # cmd_scan/cmd_migrate/cmd_validate/cmd_export(project_config, env, ...)
-# surface (see dsr_catalogue.py / dublin_core_catalogue.py). Adding a new
-# standard module only requires one entry here - main()'s dispatch below
-# never needs to grow. Every module is a fully isolated pipeline (own
-# database, own output directory); this file only ever routes to them, it
-# never touches their storage directly.
+# surface (see catalogues/dsr_catalogue.py / catalogues/dublin_core_catalogue.py).
+# Adding a new standard module only requires one entry here - main()'s
+# dispatch below never needs to grow. Every module is a fully isolated
+# pipeline (own database, own output directory); this file only ever routes
+# to them, it never touches their storage directly.
 STANDARD_CATALOGUE_MODULES = {
     "--dsr": dsr_catalogue,
     "--dublin-core": dublin_core_catalogue,

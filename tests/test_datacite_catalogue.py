@@ -16,7 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import datacite_catalogue as datacite  # noqa: E402
+from catalogues import datacite_catalogue as datacite  # noqa: E402
 
 
 class ClassifyResourceTypeTests(unittest.TestCase):

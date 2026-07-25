@@ -16,7 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import cerif_catalogue as cerif  # noqa: E402
+from catalogues import cerif_catalogue as cerif  # noqa: E402
 
 
 class ClassifyEntityTests(unittest.TestCase):

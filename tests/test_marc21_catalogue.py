@@ -15,7 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import marc21_catalogue as marc21  # noqa: E402
+from catalogues import marc21_catalogue as marc21  # noqa: E402
 
 
 class LeaderAnd008Tests(unittest.TestCase):

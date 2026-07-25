@@ -15,7 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import premis_catalogue as premis  # noqa: E402
+from catalogues import premis_catalogue as premis  # noqa: E402
 
 
 class BuildObjectRecordTests(unittest.TestCase):

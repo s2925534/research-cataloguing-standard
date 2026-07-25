@@ -21,7 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import dsr_catalogue as dsr  # noqa: E402
+from catalogues import dsr_catalogue as dsr  # noqa: E402
 
 
 class ExclusionTests(unittest.TestCase):

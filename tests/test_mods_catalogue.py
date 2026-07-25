@@ -16,7 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import mods_catalogue as mods  # noqa: E402
+from catalogues import mods_catalogue as mods  # noqa: E402
 
 
 class ClassifyTypeOfResourceTests(unittest.TestCase):

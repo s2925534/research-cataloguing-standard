@@ -11,7 +11,9 @@ file.
 
 ```
 templates/    committed, project-agnostic engine + example config
+catalogues/   one module per external metadata/cataloguing standard (--dsr, --dublin-core, ...)
 instance/     gitignored, this checkout's real config, generated schema and cataloguing output
+catalogue.py  main entry point: the primary engine + dispatch to catalogues/
 setup.py      entry point: reads instance/, writes instance/
 ```
 
@@ -140,7 +142,7 @@ python3 catalogue.py export <flag>
 
 ### DSR catalogue mode (`--dsr`)
 
-`dsr_catalogue.py` implements an alternate, Design Science Research-specific
+`catalogues/dsr_catalogue.py` implements an alternate, Design Science Research-specific
 cataloguing standard, activated with `--dsr`. It is a fully separate
 pipeline: its own database (`instance/catalogue_dsr.db`), its own ID scheme
 (`<PROJECT>-<CLASS>-<SUBTYPE>-<SEQUENCE>-<VERSION>`, e.g.
@@ -172,13 +174,13 @@ Classification is deterministic (extension -> directory override -> filename
 token -> explicit `<file>.dsrmeta.json` sidecar, in that priority order) and
 never invents metadata: anything it cannot derive is recorded as `Unknown`,
 `Not Assigned`, or `Requires Review` rather than guessed. See
-`dsr_catalogue.py`'s module docstring for the full decision order, and
+`catalogues/dsr_catalogue.py`'s module docstring for the full decision order, and
 `templates/project_config.template.json` -> `dsr_catalogue_rules` /
 `dsr_reference_roots` for the (optional) project-specific overrides.
 
 ### Dublin Core catalogue mode (`--dublin-core`)
 
-`dublin_core_catalogue.py` implements the Dublin Core Metadata Element Set
+`catalogues/dublin_core_catalogue.py` implements the Dublin Core Metadata Element Set
 (the 15 core elements) plus the handful of DCTERMS refinements most commonly
 used alongside them (`created`, `modified`, `extent`, `isPartOf`, `hasPart`,
 `isVersionOf`, `hasVersion`, `conformsTo`, `license`, `accessRights`). Its own
@@ -208,7 +210,7 @@ invented, unless a `<file>.dcmeta.json` sidecar supplies them explicitly.
 
 ### DataCite catalogue mode (`--datacite`)
 
-`datacite_catalogue.py` implements the DataCite Metadata Schema's mandatory
+`catalogues/datacite_catalogue.py` implements the DataCite Metadata Schema's mandatory
 properties (Identifier, Creator, Title, Publisher, PublicationYear,
 ResourceType) plus the recommended properties most relevant to a local
 catalogue (Subject, Contributor, Date, RelatedIdentifier, Description,
@@ -240,7 +242,7 @@ Review since a filesystem timestamp is a proxy, not a true publication date.
 
 ### Crossref catalogue mode (`--crossref`)
 
-`crossref_catalogue.py` implements Crossref's metadata deposit fields for
+`catalogues/crossref_catalogue.py` implements Crossref's metadata deposit fields for
 formally published, peer-reviewed scholarly outputs. Its own database is
 `instance/catalogue_crossref.db`; its own output directory is
 `instance/catalogued_files/crossref/`.
@@ -270,7 +272,7 @@ is only ever populated via an explicit `<file>.crossref.json` sidecar.
 
 ### CERIF catalogue mode (`--cerif`)
 
-`cerif_catalogue.py` implements the Common European Research Information
+`catalogues/cerif_catalogue.py` implements the Common European Research Information
 Format's output-bearing base entities and its hallmark time-stamped
 relationship model. Its own database is `instance/catalogue_cerif.db`; its
 own output directory is `instance/catalogued_files/cerif/`.
@@ -302,7 +304,7 @@ project has no such vocabulary service to resolve against.
 
 ### RO-Crate catalogue mode (`--ro-crate`)
 
-`ro_crate_catalogue.py` implements Research Object Crate packaging. Its own
+`catalogues/ro_crate_catalogue.py` implements Research Object Crate packaging. Its own
 database is `instance/catalogue_ro_crate.db`; its own output directory is
 `instance/catalogued_files/ro_crate/`.
 
@@ -333,7 +335,7 @@ As with CERIF, author relations only come from `project_config.json` ->
 
 ### DCAT catalogue mode (`--dcat`)
 
-`dcat_catalogue.py` implements the W3C Data Catalog Vocabulary's core
+`catalogues/dcat_catalogue.py` implements the W3C Data Catalog Vocabulary's core
 classes: one `dcat:Catalog` per configured `SOURCE_DATA_ROOTS` entry
 (mirroring RO-Crate's per-root grouping), containing one `dcat:Dataset` per
 catalogued file, each with exactly one `dcat:Distribution` describing its
@@ -364,7 +366,7 @@ timestamp is not a true issuance date.
 
 ### MODS catalogue mode (`--mods`)
 
-`mods_catalogue.py` implements the Library of Congress's Metadata Object
+`catalogues/mods_catalogue.py` implements the Library of Congress's Metadata Object
 Description Schema - richer bibliographic description than Dublin Core,
 less complex than MARC 21. Like Dublin Core and DataCite, it describes
 every catalogued file (no applicability-gating). Its own database is
@@ -397,7 +399,7 @@ CERIF/RO-Crate, the creator name only comes from `project_config.json` ->
 
 ### MARC 21 catalogue mode (`--marc21`)
 
-`marc21_catalogue.py` implements MARC 21 bibliographic records - the most
+`catalogues/marc21_catalogue.py` implements MARC 21 bibliographic records - the most
 structurally rigid standard here: a byte-exact 24-position Leader and
 40-character 008 control field, plus tagged/indicatored variable fields.
 Like Dublin Core/DataCite/MODS, it describes every catalogued file. Its own
@@ -430,7 +432,7 @@ hardcoded. `100`/`700` (personal names) only appear when
 
 ### METS catalogue mode (`--mets`)
 
-`mets_catalogue.py` implements the Metadata Encoding and Transmission
+`catalogues/mets_catalogue.py` implements the Metadata Encoding and Transmission
 Standard - one `mets.xml` package per configured `SOURCE_DATA_ROOTS` entry
 (mirroring RO-Crate's and DCAT's per-root grouping). Its own database is
 `instance/catalogue_mets.db`; its own output directory is
@@ -462,7 +464,7 @@ which this project's own `--premis` mode can independently produce.
 
 ### PREMIS catalogue mode (`--premis`)
 
-`premis_catalogue.py` implements preservation metadata - the one mode here
+`catalogues/premis_catalogue.py` implements preservation metadata - the one mode here
 that is structurally different from all nine others: preservation metadata
 is fundamentally an append-only *event log* over time, not just a per-file
 snapshot. Its own database is `instance/catalogue_premis.db`, holding two

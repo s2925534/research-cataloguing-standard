@@ -24,7 +24,9 @@ import sqlite3
 import tempfile
 from pathlib import Path
 
-ROOT_DIR = Path(__file__).resolve().parent
+# catalogue_common.py lives in catalogues/, one level below the project
+# root where instance/ actually is - parent.parent, not parent.
+ROOT_DIR = Path(__file__).resolve().parent.parent
 INSTANCE_DIR = ROOT_DIR / "instance"
 CATALOGUE_DIR = INSTANCE_DIR / "catalogued_files"
 

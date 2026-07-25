@@ -16,7 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import ro_crate_catalogue as rocrate  # noqa: E402
+from catalogues import ro_crate_catalogue as rocrate  # noqa: E402
 
 
 class BuildRecordTests(unittest.TestCase):

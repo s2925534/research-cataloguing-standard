@@ -58,7 +58,7 @@ import xml.sax.saxutils as saxutils
 from datetime import datetime, timezone
 from pathlib import Path
 
-import catalogue_common as common
+from . import catalogue_common as common
 
 DB_PATH = common.INSTANCE_DIR / "catalogue_premis.db"
 OUTPUT_DIR = common.CATALOGUE_DIR / "premis"

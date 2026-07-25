@@ -11,7 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import catalogue_common as common  # noqa: E402
+from catalogues import catalogue_common as common  # noqa: E402
 
 
 class ExclusionTests(unittest.TestCase):

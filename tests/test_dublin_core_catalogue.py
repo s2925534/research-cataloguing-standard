@@ -19,7 +19,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import dublin_core_catalogue as dc  # noqa: E402
+from catalogues import dublin_core_catalogue as dc  # noqa: E402
 
 
 class ClassifyTypeTests(unittest.TestCase):

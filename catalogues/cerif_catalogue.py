@@ -39,8 +39,8 @@ import xml.sax.saxutils as saxutils
 from datetime import datetime, timezone
 from pathlib import Path
 
-import catalogue_common as common
-import crossref_catalogue
+from . import catalogue_common as common
+from . import crossref_catalogue
 
 DB_PATH = common.INSTANCE_DIR / "catalogue_cerif.db"
 OUTPUT_DIR = common.CATALOGUE_DIR / "cerif"

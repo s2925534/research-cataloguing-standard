@@ -46,7 +46,9 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
-ROOT_DIR = Path(__file__).resolve().parent
+# dsr_catalogue.py lives in catalogues/, one level below the project root
+# where instance/ actually is - parent.parent, not parent.
+ROOT_DIR = Path(__file__).resolve().parent.parent
 INSTANCE_DIR = ROOT_DIR / "instance"
 CATALOGUE_DIR = INSTANCE_DIR / "catalogued_files"
 DSR_OUTPUT_DIR = CATALOGUE_DIR / "dsr"

@@ -16,7 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import dcat_catalogue as dcat  # noqa: E402
+from catalogues import dcat_catalogue as dcat  # noqa: E402
 
 
 class BuildRecordTests(unittest.TestCase):
