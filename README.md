@@ -238,6 +238,36 @@ from DataCite's controlled vocabulary via file extension; `publicationYear`
 defaults to the file's last-modified year but is always flagged Requires
 Review since a filesystem timestamp is a proxy, not a true publication date.
 
+### Crossref catalogue mode (`--crossref`)
+
+`crossref_catalogue.py` implements Crossref's metadata deposit fields for
+formally published, peer-reviewed scholarly outputs. Its own database is
+`instance/catalogue_crossref.db`; its own output directory is
+`instance/catalogued_files/crossref/`.
+
+```
+python3 catalogue.py scan --crossref --dry-run|--apply
+python3 catalogue.py migrate --crossref --dry-run|--apply
+python3 catalogue.py validate --crossref
+python3 catalogue.py export --crossref   # writes crossref_catalogue.csv/json,
+                                          # crossref_xml/<catalogue_id>.xml (one per
+                                          # applicable record only), catalogue_schema.json,
+                                          # catalogue_manual_review.csv, catalogue_migration_log.csv
+```
+
+Crossref is fundamentally different from the standards above: it exists to
+register formally published scholarly works, not to describe arbitrary
+project files, so this mode does not force every scanned file into a
+scholarly-work shape. Every record gets a `crossref_applicable` flag - true
+only when directory/filename evidence suggests the file is plausibly a
+scholarly-work manuscript (under `publications/`, `manuscripts/`, `papers/`,
+or `submissions/`, or a filename containing a work-type token like
+`journal-article` or `conference-paper`). Files where it's false get
+`publication_type = "Not Applicable"`, are still catalogued (so `scan` stays
+a complete inventory) but are excluded from `validate`'s issue counts and
+`export`'s XML output. As with DataCite, a DOI is never fabricated - `doi`
+is only ever populated via an explicit `<file>.crossref.json` sidecar.
+
 ## Key principle (unchanged from the original standard)
 
 Do not encode every detail in filenames. Use filenames for quick
