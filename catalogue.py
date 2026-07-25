@@ -79,7 +79,7 @@ docstring (dsr_catalogue.py, dublin_core_catalogue.py, ...) for details.
     python3 catalogue.py update-references <flag> [--dry-run|--apply]
                                         # DSR only for now - no-op unless
                                         # project_config.json -> dsr_reference_roots is set
-  where <flag> is one of: --dsr, --dublin-core, --datacite, --crossref, --cerif, --ro-crate, --dcat, --mods, --marc21
+  where <flag> is one of: --dsr, --dublin-core, --datacite, --crossref, --cerif, --ro-crate, --dcat, --mods, --marc21, --mets
 """
 from __future__ import annotations
 
@@ -109,6 +109,7 @@ import dcat_catalogue
 import dsr_catalogue
 import dublin_core_catalogue
 import marc21_catalogue
+import mets_catalogue
 import mods_catalogue
 import ro_crate_catalogue
 
@@ -129,6 +130,7 @@ STANDARD_CATALOGUE_MODULES = {
     "--dcat": dcat_catalogue,
     "--mods": mods_catalogue,
     "--marc21": marc21_catalogue,
+    "--mets": mets_catalogue,
 }
 
 ROOT_DIR = Path(__file__).resolve().parent

@@ -428,6 +428,38 @@ convention for leading articles like "The"/"A"/"An" - is computed, not
 hardcoded. `100`/`700` (personal names) only appear when
 `project_config.json` -> `researcher` is genuinely configured.
 
+### METS catalogue mode (`--mets`)
+
+`mets_catalogue.py` implements the Metadata Encoding and Transmission
+Standard - one `mets.xml` package per configured `SOURCE_DATA_ROOTS` entry
+(mirroring RO-Crate's and DCAT's per-root grouping). Its own database is
+`instance/catalogue_mets.db`; its own output directory is
+`instance/catalogued_files/mets/`.
+
+```
+python3 catalogue.py scan --mets --dry-run|--apply
+python3 catalogue.py migrate --mets --dry-run|--apply
+python3 catalogue.py validate --mets
+python3 catalogue.py export --mets   # writes mets_catalogue.csv/json,
+                                      # packages/<source-root-name>/mets.xml (one real
+                                      # METS document per SOURCE_DATA_ROOTS entry, in the
+                                      # http://www.loc.gov/METS/ namespace),
+                                      # catalogue_schema.json, catalogue_manual_review.csv,
+                                      # catalogue_migration_log.csv
+```
+
+Unlike RO-Crate (deliberately kept flat - see that section above), METS's
+whole purpose is the structural relationship between files, so `export`
+builds a real nested `structMap` `<div>` tree mirroring the source root's
+actual directory hierarchy, with a leaf `<div><fptr FILEID="..."/></div>`
+per file - the one place across these ten modules where reproducing that
+nesting is the standard's whole point rather than an unnecessary
+complication. `fileSec/file` entries carry a real SHA-256
+`CHECKSUM`/`CHECKSUMTYPE`. `amdSec/techMD` stays intentionally minimal
+(size/format/checksum) rather than duplicating a full object model - real
+METS deployments typically point `techMD` at a full PREMIS object instead,
+which this project's own `--premis` mode can independently produce.
+
 ## Key principle (unchanged from the original standard)
 
 Do not encode every detail in filenames. Use filenames for quick
