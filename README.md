@@ -268,6 +268,38 @@ a complete inventory) but are excluded from `validate`'s issue counts and
 `export`'s XML output. As with DataCite, a DOI is never fabricated - `doi`
 is only ever populated via an explicit `<file>.crossref.json` sidecar.
 
+### CERIF catalogue mode (`--cerif`)
+
+`cerif_catalogue.py` implements the Common European Research Information
+Format's output-bearing base entities and its hallmark time-stamped
+relationship model. Its own database is `instance/catalogue_cerif.db`; its
+own output directory is `instance/catalogued_files/cerif/`.
+
+```
+python3 catalogue.py scan --cerif --dry-run|--apply
+python3 catalogue.py migrate --cerif --dry-run|--apply
+python3 catalogue.py validate --cerif
+python3 catalogue.py export --cerif   # writes cerif_catalogue.csv/json,
+                                       # cerif_xml/<catalogue_id>.xml (one per record),
+                                       # catalogue_schema.json, catalogue_manual_review.csv,
+                                       # catalogue_migration_log.csv
+```
+
+Unlike Crossref, CERIF is explicitly broad-scope - it's meant to cover
+essentially any research output, not just formally published works. So
+every catalogued file becomes one of CERIF's two output-bearing entities:
+`cfResPubl` (scholarly-manuscript files, using the same evidence as
+`--crossref`'s applicability check) or `cfResProd` (everything else -
+datasets, software, models, or an unresolved "Other Product"). Relationships
+(`cfPers_ResPubl`/`cfResProd`, `cfOrgUnit_...`, `cfProj_...`, each carrying a
+`cfStartDate` per CERIF's temporal-validity model) are populated only from
+explicitly configured `project_config.json` fields (`researcher`,
+`institution`, `project_name`) - never invented, and the template's
+`REPLACE_ME` placeholder is never treated as real configured data.
+`cfClassId`/`cfClassSchemeId` values are human-readable local labels rather
+than the UUIDs a real Common CERIF Vocabulary server would use, since this
+project has no such vocabulary service to resolve against.
+
 ## Key principle (unchanged from the original standard)
 
 Do not encode every detail in filenames. Use filenames for quick
