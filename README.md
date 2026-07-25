@@ -331,6 +331,37 @@ simplification the spec permits, stated here rather than silently assumed.
 As with CERIF, author relations only come from `project_config.json` ->
 `researcher` when genuinely configured (never the `REPLACE_ME` placeholder).
 
+### DCAT catalogue mode (`--dcat`)
+
+`dcat_catalogue.py` implements the W3C Data Catalog Vocabulary's core
+classes: one `dcat:Catalog` per configured `SOURCE_DATA_ROOTS` entry
+(mirroring RO-Crate's per-root grouping), containing one `dcat:Dataset` per
+catalogued file, each with exactly one `dcat:Distribution` describing its
+format/size/checksum. Its own database is `instance/catalogue_dcat.db`; its
+own output directory is `instance/catalogued_files/dcat/`.
+
+```
+python3 catalogue.py scan --dcat --dry-run|--apply
+python3 catalogue.py migrate --dcat --dry-run|--apply
+python3 catalogue.py validate --dcat
+python3 catalogue.py export --dcat   # writes dcat_catalogue.csv/json,
+                                      # turtle/<source-root-name>.ttl (one real DCAT
+                                      # Turtle/RDF catalogue per SOURCE_DATA_ROOTS entry),
+                                      # catalogue_schema.json, catalogue_manual_review.csv,
+                                      # catalogue_migration_log.csv
+```
+
+DCAT is fundamentally an RDF vocabulary, so - unlike RO-Crate's JSON-LD
+graph - `export`'s defining output here is Turtle, the form DCAT is most
+commonly published in on open-data portals. Checksums are represented via
+the standard SPDX `Checksum` blank-node pattern DCAT-AP profiles use, not a
+bespoke property. `dataset`/`distribution` URIs are content-addressed
+(`urn:dcat:dataset:sha256-<hash>`); `publisher` falls back to
+`project_config.json` -> `institution` when genuinely configured (same
+reasoning as `--datacite`); `issued` is a proxy from the file's creation
+timestamp and is always flagged Requires Review, since a filesystem
+timestamp is not a true issuance date.
+
 ## Key principle (unchanged from the original standard)
 
 Do not encode every detail in filenames. Use filenames for quick
