@@ -300,6 +300,37 @@ explicitly configured `project_config.json` fields (`researcher`,
 than the UUIDs a real Common CERIF Vocabulary server would use, since this
 project has no such vocabulary service to resolve against.
 
+### RO-Crate catalogue mode (`--ro-crate`)
+
+`ro_crate_catalogue.py` implements Research Object Crate packaging. Its own
+database is `instance/catalogue_ro_crate.db`; its own output directory is
+`instance/catalogued_files/ro_crate/`.
+
+```
+python3 catalogue.py scan --ro-crate --dry-run|--apply
+python3 catalogue.py migrate --ro-crate --dry-run|--apply
+python3 catalogue.py validate --ro-crate
+python3 catalogue.py export --ro-crate   # writes ro_crate_catalogue.csv/json,
+                                          # crates/<source-root-name>/ro-crate-metadata.json
+                                          # (one real RO-Crate 1.2 JSON-LD manifest per
+                                          # configured SOURCE_DATA_ROOTS entry),
+                                          # catalogue_schema.json, catalogue_manual_review.csv,
+                                          # catalogue_migration_log.csv
+```
+
+RO-Crate is structurally different from every other mode here: it isn't a
+flat per-file record schema, it's a JSON-LD graph. `export`'s defining
+output is `ro-crate-metadata.json` itself - a root `Dataset` entity (`"./"`)
+whose `hasPart` links to a `File` entity per catalogued file
+(`name`/`contentSize`/`encodingFormat`/`dateModified`/`sha256`), plus the
+self-describing metadata-descriptor entity conforming to RO-Crate 1.2, plus
+`Person` entities for configured authorship. `hasPart` is flat (every file
+linked directly from the root) rather than a nested tree of intermediate
+directory-`Dataset` entities mirroring the real folder structure - a valid
+simplification the spec permits, stated here rather than silently assumed.
+As with CERIF, author relations only come from `project_config.json` ->
+`researcher` when genuinely configured (never the `REPLACE_ME` placeholder).
+
 ## Key principle (unchanged from the original standard)
 
 Do not encode every detail in filenames. Use filenames for quick
