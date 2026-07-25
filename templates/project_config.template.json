@@ -54,5 +54,17 @@
       "_comment": "field name -> regex; field name should match (or map cleanly to) a schema_core.json primary_entity_type when singular, e.g. container_numbers -> container",
       "some_identifier_numbers": "\\bYOUR-REGEX-HERE\\b"
     }
-  }
+  },
+
+  "dsr_catalogue_rules": {
+    "_comment": "Optional. Only consumed by `catalogue.py ... --dsr` (dsr_catalogue.py) - the legacy engine above never reads this. Everything here is optional; the DSR engine works with sensible defaults if this whole block is omitted.",
+    "project_code": "DSR",
+    "id_padding": 4,
+    "extra_directory_class_map": [
+      ["path/substring/marker", "ART"]
+    ]
+  },
+
+  "dsr_reference_roots": [],
+  "_dsr_reference_roots_comment": "Optional. Absolute paths `catalogue.py update-references --dsr` scans for {{dsr-ref:<stable_id or relative_path>}} tokens to replace with formatted catalogue citations. Empty by default - the command no-ops until you set this."
 }

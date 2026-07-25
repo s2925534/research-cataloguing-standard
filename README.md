@@ -118,6 +118,44 @@ a browser for a searchable/sortable table view of the catalogue - it needs
 to be served over http, not opened as a `file://` URL, e.g. `python3 -m
 http.server` from that folder.
 
+## DSR catalogue mode (`--dsr`)
+
+`dsr_catalogue.py` implements an alternate, Design Science Research-specific
+cataloguing standard, activated with `--dsr`. It is a fully separate
+pipeline: its own database (`instance/catalogue_dsr.db`), its own ID scheme
+(`<PROJECT>-<CLASS>-<SUBTYPE>-<SEQUENCE>-<VERSION>`, e.g.
+`DSR-ART-MOD-0001-V1.0`), and its own output directory
+(`instance/catalogued_files/dsr/`). It never opens or writes
+`instance/catalogue.db` or the legacy outputs above - the pipeline described
+in the previous section is completely unaffected whether or not `--dsr` is
+ever used.
+
+```
+python3 catalogue.py scan --dsr --dry-run             # preview classification, writes nothing
+python3 catalogue.py scan --dsr --apply                # inventory + classify into instance/catalogue_dsr.db
+python3 catalogue.py migrate --dsr --dry-run|--apply   # re-classify already-scanned records against
+                                                        # current rules, no filesystem walk
+python3 catalogue.py validate --dsr                    # schema/relationship/version integrity check
+python3 catalogue.py export --dsr                      # write research_catalogue.csv/json/md/sqlite,
+                                                        # catalogue_relationships.csv, catalogue_schema.json,
+                                                        # catalogue_controlled_vocabulary.json,
+                                                        # catalogue_migration_log.csv, catalogue_manual_review.csv,
+                                                        # catalogue_classification_rules.json
+python3 catalogue.py update-references --dsr --dry-run|--apply
+                                                        # replaces {{dsr-ref:<stable_id or relative_path>}}
+                                                        # tokens in docs under project_config.json ->
+                                                        # dsr_reference_roots with formatted catalogue
+                                                        # citations. No-op until that key is set.
+```
+
+Classification is deterministic (extension -> directory override -> filename
+token -> explicit `<file>.dsrmeta.json` sidecar, in that priority order) and
+never invents metadata: anything it cannot derive is recorded as `Unknown`,
+`Not Assigned`, or `Requires Review` rather than guessed. See
+`dsr_catalogue.py`'s module docstring for the full decision order, and
+`templates/project_config.template.json` -> `dsr_catalogue_rules` /
+`dsr_reference_roots` for the (optional) project-specific overrides.
+
 ## Key principle (unchanged from the original standard)
 
 Do not encode every detail in filenames. Use filenames for quick

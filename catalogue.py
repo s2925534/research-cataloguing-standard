@@ -62,6 +62,21 @@ Usage:
                                         # the copy to the first N catalogue_ids (by catalogue_id) right
                                         # after scan, so the rest of the pipeline only processes N records.
     python3 catalogue.py stats         # summary counts
+
+DSR (Design Science Research) catalogue mode - see dsr_catalogue.py:
+    Fully separate pipeline: its own database (instance/catalogue_dsr.db) and
+    output directory (instance/catalogued_files/dsr/). Never opens or writes
+    instance/catalogue.db or the legacy instance/catalogued_files/ outputs
+    above - the legacy catalogue is unaffected whether or not --dsr is ever used.
+    python3 catalogue.py scan --dsr [--dry-run|--apply]
+    python3 catalogue.py migrate --dsr [--dry-run|--apply]
+                                        # re-classify already-scanned DSR records
+                                        # against current rules (no filesystem walk)
+    python3 catalogue.py validate --dsr
+    python3 catalogue.py export --dsr
+    python3 catalogue.py update-references --dsr [--dry-run|--apply]
+                                        # no-op unless project_config.json ->
+                                        # dsr_reference_roots is set
 """
 from __future__ import annotations
 
@@ -83,6 +98,8 @@ import urllib.request
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
+
+import dsr_catalogue
 
 ROOT_DIR = Path(__file__).resolve().parent
 TEMPLATES_DIR = ROOT_DIR / "templates"
@@ -2222,7 +2239,35 @@ def main() -> int:
     CATALOGUE_DIR.mkdir(parents=True, exist_ok=True)
 
     if command == "scan":
-        cmd_scan(project_config, env)
+        args = sys.argv[2:]
+        if "--dsr" in args:
+            dsr_catalogue.cmd_dsr_scan(project_config, env, dry_run="--dry-run" in args, apply="--apply" in args)
+        else:
+            cmd_scan(project_config, env)
+    elif command == "migrate":
+        args = sys.argv[2:]
+        if "--dsr" not in args:
+            print("Unknown command: migrate (DSR-only - pass --dsr; legacy equivalent is rename-plan/apply-rename)")
+            return 1
+        dsr_catalogue.cmd_dsr_migrate(project_config, env, dry_run="--dry-run" in args, apply="--apply" in args)
+    elif command == "validate":
+        args = sys.argv[2:]
+        if "--dsr" not in args:
+            print("Unknown command: validate (DSR-only - pass --dsr; legacy equivalent is validate-schema)")
+            return 1
+        dsr_catalogue.cmd_dsr_validate(project_config, env)
+    elif command == "export":
+        args = sys.argv[2:]
+        if "--dsr" not in args:
+            print("Unknown command: export (DSR-only - pass --dsr; legacy equivalent is export-jsonl)")
+            return 1
+        dsr_catalogue.cmd_dsr_export(project_config, env)
+    elif command == "update-references":
+        args = sys.argv[2:]
+        if "--dsr" not in args:
+            print("Unknown command: update-references (DSR-only - pass --dsr)")
+            return 1
+        dsr_catalogue.cmd_dsr_update_references(project_config, env, dry_run="--dry-run" in args, apply="--apply" in args)
     elif command == "extract":
         cmd_extract(project_config)
     elif command == "enrich":
