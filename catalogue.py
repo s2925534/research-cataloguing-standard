@@ -79,7 +79,7 @@ docstring (dsr_catalogue.py, dublin_core_catalogue.py, ...) for details.
     python3 catalogue.py update-references <flag> [--dry-run|--apply]
                                         # DSR only for now - no-op unless
                                         # project_config.json -> dsr_reference_roots is set
-  where <flag> is one of: --dsr, --dublin-core
+  where <flag> is one of: --dsr, --dublin-core, --datacite
 """
 from __future__ import annotations
 
@@ -102,6 +102,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
+import datacite_catalogue
 import dsr_catalogue
 import dublin_core_catalogue
 
@@ -115,6 +116,7 @@ import dublin_core_catalogue
 STANDARD_CATALOGUE_MODULES = {
     "--dsr": dsr_catalogue,
     "--dublin-core": dublin_core_catalogue,
+    "--datacite": datacite_catalogue,
 }
 
 ROOT_DIR = Path(__file__).resolve().parent

@@ -206,6 +206,38 @@ can't deterministically derive (`creator`, `subject`, `description`,
 `publisher`, `rights`, etc.) default to `Unknown`/empty rather than being
 invented, unless a `<file>.dcmeta.json` sidecar supplies them explicitly.
 
+### DataCite catalogue mode (`--datacite`)
+
+`datacite_catalogue.py` implements the DataCite Metadata Schema's mandatory
+properties (Identifier, Creator, Title, Publisher, PublicationYear,
+ResourceType) plus the recommended properties most relevant to a local
+catalogue (Subject, Contributor, Date, RelatedIdentifier, Description,
+Language, Version, Rights, Formats, Sizes). Its own database is
+`instance/catalogue_datacite.db`; its own output directory is
+`instance/catalogued_files/datacite/`.
+
+```
+python3 catalogue.py scan --datacite --dry-run|--apply
+python3 catalogue.py migrate --datacite --dry-run|--apply
+python3 catalogue.py validate --datacite
+python3 catalogue.py export --datacite   # writes datacite_catalogue.csv/json,
+                                          # datacite_xml/<catalogue_id>.xml (one real
+                                          # DataCite kernel-4 XML record per file),
+                                          # catalogue_schema.json, catalogue_manual_review.csv,
+                                          # catalogue_migration_log.csv
+```
+
+This engine never fabricates a DOI - `identifier` defaults to
+`identifierType="Local"` with a content-addressed value (the file's sha256),
+since a DOI is a formally registered identifier that can't be derived from a
+file's bytes or path. A real DOI (or any other DataCite property) can only
+enter a record via an explicit `<file>.datacite.json` sidecar. `publisher`
+defaults to `project_config.json` -> `institution` when set (explicitly
+configured data, not invented) else `Unknown`; `resourceTypeGeneral` comes
+from DataCite's controlled vocabulary via file extension; `publicationYear`
+defaults to the file's last-modified year but is always flagged Requires
+Review since a filesystem timestamp is a proxy, not a true publication date.
+
 ## Key principle (unchanged from the original standard)
 
 Do not encode every detail in filenames. Use filenames for quick
