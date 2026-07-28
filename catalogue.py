@@ -72,9 +72,19 @@ ever used. See STANDARD_CATALOGUE_MODULES in this file and each module's own
 docstring (catalogues/dsr_catalogue.py, catalogues/dublin_core_catalogue.py,
 ...) for details.
     python3 catalogue.py scan <flag> [--dry-run|--apply]
-    python3 catalogue.py migrate <flag> [--dry-run|--apply]
+    python3 catalogue.py migrate <flag> [--dry-run|--apply] [--ai-decide-review]
                                         # re-classify already-scanned records against
-                                        # current rules (no filesystem walk)
+                                        # current rules (no filesystem walk).
+                                        # --ai-decide-review: DSR only. After the normal
+                                        # deterministic pass, asks an LLM to resolve whatever
+                                        # is still Requires Review (skips excluded/directory
+                                        # records), validated against this engine's own
+                                        # closed class/subtype vocabulary - never an invented
+                                        # one. Marks the result confidence_status=AI-Assigned
+                                        # (never "Confident") so it's always distinguishable
+                                        # from a deterministic classification. Requires
+                                        # OPENAI_API_KEY in instance/.env; makes real API
+                                        # calls even in --dry-run.
     python3 catalogue.py validate <flag>
     python3 catalogue.py export <flag>
     python3 catalogue.py update-references <flag> [--dry-run|--apply]
@@ -2299,7 +2309,14 @@ def main() -> int:
             return 1
 
         if command == "migrate":
-            module.cmd_migrate(project_config, env, dry_run="--dry-run" in args, apply="--apply" in args)
+            if "--ai-decide-review" in args:
+                if module is not dsr_catalogue:
+                    print(f"Unknown command: migrate --ai-decide-review is only supported for --dsr (got {matched[0]})")
+                    return 1
+                module.cmd_migrate(project_config, env, dry_run="--dry-run" in args, apply="--apply" in args,
+                                    ai_decide_review=True)
+            else:
+                module.cmd_migrate(project_config, env, dry_run="--dry-run" in args, apply="--apply" in args)
         elif command == "validate":
             module.cmd_validate(project_config, env)
         elif command == "export":
