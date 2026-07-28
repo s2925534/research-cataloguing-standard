@@ -265,6 +265,29 @@ class ValidateContentPreservedTests(unittest.TestCase):
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
+    def test_register_source_file_dsr_id_swap_passes(self):
+        # Regression: the trailing-parenthetical normalisation only
+        # recognised the legacy id shape (LIT-00535) at one point, so a
+        # correct rewrite to a DSR stable_id (multiple hyphen-joined
+        # segments, e.g. DSR-REF-GRY-0076) read as a false content change.
+        original = (
+            "Source file:\n"
+            "instance/catalogued_files/documents/literature/LIT_OTHER_LIT-00535_ROOT.pdf (LIT-00535)\n"
+        )
+        updated = (
+            "Source file:\n"
+            "instance/catalogued_files/documents/literature/LIT_OTHER_LIT-00535_ROOT.pdf (DSR-REF-GRY-0076)\n"
+        )
+        tmp = Path(tempfile.mkdtemp())
+        try:
+            o, u = tmp / "o.md", tmp / "u.md"
+            o.write_text(original, encoding="utf-8")
+            u.write_text(updated, encoding="utf-8")
+            ok, detail = migration.validate_content_preserved(o, u)
+            self.assertTrue(ok, detail)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
     def test_prose_change_fails(self):
         original = "Claim text [INTERNAL EVIDENCE — STD-01533, flagged for review]."
         updated = "Different claim text entirely [INTERNAL EVIDENCE — DSR-STD-JRN-0001, flagged for review]."

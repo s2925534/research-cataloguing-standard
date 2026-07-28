@@ -356,8 +356,13 @@ def apply_register(target_path: Path, out_path: Path, crosswalk: dict) -> dict:
 
 def _strip_reference_spans(text: str) -> str:
     text = INTERNAL_EVIDENCE_MARKER_RE.sub("[INTERNAL EVIDENCE]", text)
+    # Matches both the legacy id shape (LIT-00535) and the DSR stable_id
+    # shape (DSR-REF-GRY-0076, i.e. an arbitrary number of hyphen-joined
+    # uppercase/digit segments) - a pre/post-migration comparison must
+    # recognise either as "a reference token", not just the one the file
+    # started with, or a correct rewrite reads as a false content change.
     text = re.sub(
-        r"^(instance/catalogued_files/.*)\([A-Z]{2,5}-\d{4,6}\)\s*$",
+        r"^(instance/catalogued_files/.*)\([A-Z0-9]+(?:-[A-Z0-9]+)+\)\s*$",
         r"\1(ID)", text, flags=re.MULTILINE,
     )
     return text
