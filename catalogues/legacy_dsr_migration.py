@@ -108,14 +108,12 @@ def _build_documents_name_index(documents_dir: Path) -> dict:
 
 
 def _resolve_legacy_file(row: sqlite3.Row, name_index: dict) -> tuple[Path | None, str]:
-    """Prefers the original source_path (richer directory context for
-    classification); falls back to the renamed copy under
-    catalogued_files/documents/ (apply-rename's shutil.copy2 output, byte-
-    identical to the original) when the source has moved/been deleted since
-    cataloguing."""
-    source_path = row["source_path"]
-    if source_path and Path(source_path).exists():
-        return Path(source_path), "source_path"
+    """Migration source is exclusively the renamed copy under
+    catalogued_files/documents/ - the one location apply-rename guarantees
+    is present and correct. source_path (the original, pre-cataloguing
+    location) is never consulted here: several legacy files are known to
+    have moved since cataloguing, so source_path is not trustworthy as a
+    "current location" signal, only the destination copy is."""
     proposed = row["proposed_filename"]
     if proposed and proposed in name_index:
         return name_index[proposed], "renamed_copy"

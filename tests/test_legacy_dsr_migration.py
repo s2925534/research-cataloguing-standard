@@ -54,16 +54,18 @@ def make_legacy_db(path: Path, rows: list[dict]) -> None:
 
 
 class CrosswalkBuildTests(unittest.TestCase):
+    """Migration source is exclusively the catalogued_files/documents/ copy -
+    source_path is deliberately absent/irrelevant/stale-looking in these
+    fixtures to prove it's never consulted."""
+
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
         self.source_dir = self.tmp / "source"
         self.source_dir.mkdir()
-        (self.source_dir / "report.pdf").write_text("pdf content", encoding="utf-8")
-        (self.source_dir / "notes.docx").write_text("meeting notes content", encoding="utf-8")
 
         self.legacy_db_path = self.tmp / "catalogue.db"
         make_legacy_db(self.legacy_db_path, [
-            {"catalogue_id": "STD-00001", "source_path": str(self.source_dir / "report.pdf"),
+            {"catalogue_id": "STD-00001", "source_path": str(self.source_dir / "moved-away-report.pdf"),
              "proposed_filename": "report_renamed.pdf", "file_class": "STD"},
             {"catalogue_id": "OPS-00001", "source_path": str(self.source_dir / "missing.pdf"),
              "proposed_filename": "also_missing.pdf", "file_class": "OPS"},
@@ -71,12 +73,17 @@ class CrosswalkBuildTests(unittest.TestCase):
         self.dsr_db_path = self.tmp / "catalogue_dsr.db"
         self._orig_documents_dir = migration.CATALOGUE_DOCUMENTS_DIR
         migration.CATALOGUE_DOCUMENTS_DIR = self.tmp / "documents"
+        migration.CATALOGUE_DOCUMENTS_DIR.mkdir(parents=True)
+        # STD-00001's destination copy exists even though its source_path
+        # points at a location that no longer has the file - proves the
+        # resolver uses the destination, not source_path, as ground truth.
+        (migration.CATALOGUE_DOCUMENTS_DIR / "report_renamed.pdf").write_text("pdf content", encoding="utf-8")
 
     def tearDown(self):
         migration.CATALOGUE_DOCUMENTS_DIR = self._orig_documents_dir
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def test_migrates_file_with_existing_source_path(self):
+    def test_migrates_from_destination_copy_ignoring_stale_source_path(self):
         legacy_conn = migration.open_legacy_db_readonly(self.legacy_db_path)
         dsr_conn = dsr.get_dsr_db(self.dsr_db_path)
         rows, stats = migration.build_crosswalk(legacy_conn, dsr_conn, {"project_id": "test"})
@@ -90,29 +97,30 @@ class CrosswalkBuildTests(unittest.TestCase):
 
         by_id = {r["legacy_catalogue_id"]: r for r in rows}
         self.assertEqual(by_id["STD-00001"]["status"], "migrated")
-        self.assertEqual(by_id["STD-00001"]["source_kind"], "source_path")
+        self.assertEqual(by_id["STD-00001"]["source_kind"], "renamed_copy")
         self.assertTrue(by_id["STD-00001"]["dsr_stable_id"])
+        # OPS-00001 has neither a destination copy nor is one findable -
+        # its (also nonexistent) source_path must not rescue it.
         self.assertEqual(by_id["OPS-00001"]["status"], "skipped_no_file")
         self.assertEqual(by_id["OPS-00001"]["dsr_stable_id"], "")
 
-    def test_falls_back_to_renamed_copy_when_source_path_missing(self):
-        documents_dir = migration.CATALOGUE_DOCUMENTS_DIR
-        documents_dir.mkdir(parents=True)
-        (documents_dir / "recovered.pdf").write_text("recovered content", encoding="utf-8")
-        legacy_db = self.tmp / "catalogue2.db"
+    def test_valid_source_path_alone_is_not_enough_without_a_destination_copy(self):
+        legacy_db = self.tmp / "catalogue_source_only.db"
+        real_source = self.source_dir / "has-a-real-source-but-not-renamed-yet.pdf"
+        real_source.write_text("still sitting at its original location", encoding="utf-8")
         make_legacy_db(legacy_db, [
-            {"catalogue_id": "STD-00002", "source_path": str(self.tmp / "gone.pdf"),
-             "proposed_filename": "recovered.pdf", "file_class": "STD"},
+            {"catalogue_id": "STD-00005", "source_path": str(real_source),
+             "proposed_filename": None, "file_class": "STD"},
         ])
         legacy_conn = migration.open_legacy_db_readonly(legacy_db)
-        dsr_conn = dsr.get_dsr_db(self.tmp / "catalogue_dsr2.db")
+        dsr_conn = dsr.get_dsr_db(self.tmp / "catalogue_dsr_source_only.db")
         rows, stats = migration.build_crosswalk(legacy_conn, dsr_conn, {"project_id": "test"})
         dsr_conn.commit()
         legacy_conn.close()
         dsr_conn.close()
 
-        self.assertEqual(rows[0]["status"], "migrated")
-        self.assertEqual(rows[0]["source_kind"], "renamed_copy")
+        self.assertEqual(rows[0]["status"], "skipped_no_file")
+        self.assertEqual(stats["migrated"], 0)
 
     def test_repo_rollup_gets_cod_requires_review_entry(self):
         rollup_dir = self.tmp / "some_repo"
@@ -138,8 +146,8 @@ class CrosswalkBuildTests(unittest.TestCase):
     def test_two_legacy_ids_pointing_at_same_file_share_one_dsr_entry(self):
         legacy_db = self.tmp / "catalogue_dup.db"
         make_legacy_db(legacy_db, [
-            {"catalogue_id": "STD-00003", "source_path": str(self.source_dir / "report.pdf"), "file_class": "STD"},
-            {"catalogue_id": "STD-00004", "source_path": str(self.source_dir / "report.pdf"), "file_class": "STD"},
+            {"catalogue_id": "STD-00003", "proposed_filename": "report_renamed.pdf", "file_class": "STD"},
+            {"catalogue_id": "STD-00004", "proposed_filename": "report_renamed.pdf", "file_class": "STD"},
         ])
         legacy_conn = migration.open_legacy_db_readonly(legacy_db)
         dsr_conn = dsr.get_dsr_db(self.tmp / "catalogue_dsr_dup.db")
