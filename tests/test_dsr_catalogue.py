@@ -60,6 +60,14 @@ class ClassifyExtensionTests(unittest.TestCase):
         result = dsr.classify_file(Path("data/export.csv"), Path("data").parent, self.rules)
         self.assertEqual((result["class_code"], result["subtype_code"]), ("DAT", "CSV"))
 
+    def test_html_maps_to_doc_wrk(self):
+        result = dsr.classify_file(Path("misc/delivery-notice.html"), Path("misc").parent, self.rules)
+        self.assertEqual((result["class_code"], result["subtype_code"]), ("DOC", "WRK"))
+
+    def test_htm_maps_to_doc_wrk(self):
+        result = dsr.classify_file(Path("misc/notice.htm"), Path("misc").parent, self.rules)
+        self.assertEqual((result["class_code"], result["subtype_code"]), ("DOC", "WRK"))
+
     def test_python_source_maps_to_cod_pyt(self):
         result = dsr.classify_file(Path("scripts/run.py"), Path("scripts").parent, self.rules)
         self.assertEqual((result["class_code"], result["subtype_code"]), ("COD", "PYT"))
@@ -303,6 +311,40 @@ class ScanIntegrationTests(unittest.TestCase):
     def test_validate_reports_no_structural_issues_on_clean_scan(self):
         dsr.cmd_scan(self.project_config, self.env, dry_run=False, apply=True)
         dsr.cmd_validate(self.project_config, self.env)  # should not raise
+
+    def test_migrate_never_reclassifies_a_directory_source_path(self):
+        """A repo-rollup-style dsr_catalogue row (source_path pointing at a
+        directory, as legacy_dsr_migration.py inserts) must survive
+        cmd_migrate untouched - classify_file() has no notion of a directory
+        and would otherwise clobber it via the unmapped-extension fallback."""
+        conn = dsr.get_dsr_db()
+        now = "2026-01-01T00:00:00+00:00"
+        conn.execute(
+            """
+            INSERT INTO dsr_catalogue (
+                catalogue_id, stable_id, version, file_name, relative_path, source_path,
+                class_code, subtype_code, dsr_artefact_type, confidence_status,
+                classification_rule, classification_evidence, legacy_ids_json,
+                created_date, modified_date, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "DSR-COD-UNK-0001-V0.1", "DSR-COD-UNK-0001", "V0.1", "artefacts", ".",
+                str(self.source_root / "artefacts"), "COD", "UNK", "Not Applicable", "Requires Review",
+                "repo_rollup:directory_not_single_file", "legacy repo rollup (2 files) - Requires Review",
+                "[]", "2026-01-01", "2026-01-01", now, now,
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        dsr.cmd_migrate(self.project_config, self.env, dry_run=False, apply=True)
+
+        conn = dsr.get_dsr_db()
+        row = conn.execute("SELECT * FROM dsr_catalogue WHERE catalogue_id = ?", ("DSR-COD-UNK-0001-V0.1",)).fetchone()
+        conn.close()
+        self.assertEqual(row["class_code"], "COD")
+        self.assertEqual(row["subtype_code"], "UNK")
 
     def test_duplicate_content_is_flagged_not_auto_merged(self):
         (self.source_root / "artefacts" / "process-model-copy-v1.md").write_text("model spec", encoding="utf-8")

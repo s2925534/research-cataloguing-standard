@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>DSR Review</title>
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header>
+    <h1>DSR classification review</h1>
+    <div id="progress" class="progress">Loading…</div>
+  </header>
+
+  <main id="app">
+    <p id="empty-state" class="hidden">Nothing left to review.</p>
+
+    <section id="card" class="card hidden">
+      <div class="card-top">
+        <div>
+          <span class="badge" id="class-badge"></span>
+          <span class="mono" id="stable-id"></span>
+        </div>
+        <div class="legacy-ids" id="legacy-ids"></div>
+      </div>
+
+      <h2 id="file-name" class="mono"></h2>
+      <div class="path-row">
+        <span class="mono path" id="source-path"></span>
+        <a id="open-file" class="button small" target="_blank" rel="noopener">Open file</a>
+      </div>
+
+      <div class="field">
+        <label>Why it needs review</label>
+        <p id="classification-rule" class="mono small"></p>
+        <p id="classification-evidence"></p>
+      </div>
+
+      <div class="field">
+        <label>Current classification</label>
+        <p><span class="mono" id="current-class"></span> / <span class="mono" id="current-subtype"></span> &middot; version <span class="mono" id="current-version"></span></p>
+      </div>
+
+      <div class="actions">
+        <button id="btn-approve" class="button primary">Approve as-is (a)</button>
+        <button id="btn-edit-toggle" class="button">Edit classification (e)</button>
+        <button id="btn-skip" class="button ghost">Skip for now (s)</button>
+      </div>
+
+      <div id="edit-panel" class="edit-panel hidden">
+        <div class="edit-row">
+          <label>Class</label>
+          <select id="edit-class"></select>
+        </div>
+        <div class="edit-row" id="edit-subtype-row">
+          <label>Artefact subtype</label>
+          <select id="edit-subtype"></select>
+        </div>
+        <button id="btn-save-edit" class="button primary">Save classification</button>
+      </div>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

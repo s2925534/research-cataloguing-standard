@@ -144,6 +144,7 @@ DEFAULT_EXTENSION_MAP = {
     # Documents
     ".docx": ("DOC", "WRK"), ".doc": ("DOC", "WRK"), ".odt": ("DOC", "WRK"),
     ".rtf": ("DOC", "WRK"), ".md": ("DOC", "WRK"), ".txt": ("DOC", "WRK"),
+    ".html": ("DOC", "WRK"), ".htm": ("DOC", "WRK"),
     ".tex": ("DOC", "THS"),
     # Structured data
     ".csv": ("DAT", "CSV"), ".tsv": ("DAT", "CSV"),
@@ -756,7 +757,11 @@ def _run_migrate(conn: sqlite3.Connection, rules: dict) -> list[dict]:
     rows = conn.execute("SELECT * FROM dsr_catalogue ORDER BY catalogue_id").fetchall()
     for row in rows:
         source_path = Path(row["source_path"])
-        if not source_path.exists():
+        # A directory (a legacy_dsr_migration.py repo-rollup entry) isn't a
+        # classifiable file - classify_file() would fall through to the
+        # unmapped-extension case and clobber the rollup's real COD
+        # classification with the generic "Requires Review" fallback.
+        if not source_path.exists() or source_path.is_dir():
             continue
         # Re-derive source_root as the longest known ancestor isn't stored;
         # relative_path + source_path together are enough to reconstruct it.
