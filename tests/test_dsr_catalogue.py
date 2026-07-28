@@ -194,6 +194,20 @@ class DirectoryAndArtefactTests(unittest.TestCase):
         self.assertEqual(result["dsr_artefact_type"], "Not Applicable")
 
 
+class IdSafeClassTokenTests(unittest.TestCase):
+    def test_requires_review_maps_to_safe_placeholder(self):
+        self.assertEqual(dsr.id_safe_class_token(dsr.REQUIRES_REVIEW), "UNC")
+
+    def test_real_class_code_passes_through_unchanged(self):
+        for cls in dsr.MAIN_CLASSES:
+            self.assertEqual(dsr.id_safe_class_token(cls), cls)
+
+    def test_placeholder_has_no_space_or_lowercase(self):
+        token = dsr.id_safe_class_token(dsr.REQUIRES_REVIEW)
+        self.assertNotIn(" ", token)
+        self.assertEqual(token, token.upper())
+
+
 class VersionTests(unittest.TestCase):
     def test_no_version_token_defaults_v0_1_and_flags_review(self):
         version, review = dsr._determine_version("process-model")
@@ -311,6 +325,16 @@ class ScanIntegrationTests(unittest.TestCase):
         self.assertEqual(model_row["version"], "V1.0")
         self.assertTrue(model_row["stable_id"].startswith("DSR-ART-MOD-"))
         self.assertEqual(model_row["catalogue_id"], f"{model_row['stable_id']}-V1.0")
+
+    def test_unmapped_extension_gets_space_free_stable_id(self):
+        (self.source_root / "mystery.xyz123").write_text("no known mapping", encoding="utf-8")
+        dsr.cmd_scan(self.project_config, self.env, dry_run=False, apply=True)
+        conn = dsr.get_dsr_db()
+        row = conn.execute("SELECT * FROM dsr_catalogue WHERE file_name = 'mystery.xyz123'").fetchone()
+        conn.close()
+        self.assertEqual(row["class_code"], dsr.REQUIRES_REVIEW)  # DB column keeps the real status
+        self.assertNotIn(" ", row["stable_id"])  # but the id string itself never embeds it literally
+        self.assertTrue(row["stable_id"].startswith("DSR-UNC-"))
 
     def test_scan_is_idempotent(self):
         dsr.cmd_scan(self.project_config, self.env, dry_run=False, apply=True)

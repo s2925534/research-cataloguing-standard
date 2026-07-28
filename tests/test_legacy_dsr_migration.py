@@ -11,6 +11,7 @@ Run with:
 """
 from __future__ import annotations
 
+import json
 import shutil
 import sqlite3
 import sys
@@ -341,6 +342,177 @@ class PromoteTests(unittest.TestCase):
 
         with self.assertRaises(SystemExit):
             migration.promote(live, new, archive_dir)
+
+
+class RenamePlanTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.docs_dir = self.tmp / "documents"
+        self.docs_dir.mkdir()
+        self.conn = dsr.get_dsr_db(self.tmp / "catalogue_dsr.db")
+
+    def tearDown(self):
+        self.conn.close()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _insert(self, catalogue_id, stable_id, file_name, legacy_ids, status="active"):
+        path = self.docs_dir / file_name
+        path.write_text("content", encoding="utf-8")
+        self.conn.execute(
+            """
+            INSERT INTO dsr_catalogue (
+                catalogue_id, stable_id, version, file_name, relative_path, source_path,
+                class_code, subtype_code, confidence_status, status, legacy_ids_json,
+                created_date, modified_date, created_at, updated_at
+            ) VALUES (?, ?, 'V1.0', ?, ?, ?, 'REF', 'GRY', 'Confident', ?, ?,
+                      '2026-01-01', '2026-01-01', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')
+            """,
+            (catalogue_id, stable_id, file_name, file_name, str(path), status, json.dumps(legacy_ids)),
+        )
+        self.conn.commit()
+        return path
+
+    def test_build_plan_finds_legacy_token_and_computes_new_filename(self):
+        self._insert("DSR-REF-GRY-0001-V1.0", "DSR-REF-GRY-0001", "LIT_OTHER_LIT-00535_ROOT.pdf", ["LIT-00535"])
+        plan = migration.build_rename_plan(self.conn)
+        self.assertEqual(len(plan), 1)
+        self.assertEqual(plan[0]["status"], "pending")
+        self.assertEqual(plan[0]["new_filename"], "LIT_OTHER_DSR-REF-GRY-0001_ROOT.pdf")
+
+    def test_apply_dry_run_does_not_touch_disk_or_db(self):
+        path = self._insert("DSR-REF-GRY-0002-V1.0", "DSR-REF-GRY-0002", "LIT_OTHER_LIT-00600_ROOT.pdf", ["LIT-00600"])
+        plan = migration.build_rename_plan(self.conn)
+        migration.apply_rename_plan(self.conn, plan, execute=False)
+        self.assertTrue(path.exists())
+        row = self.conn.execute("SELECT file_name FROM dsr_catalogue WHERE catalogue_id=?",
+                                 ("DSR-REF-GRY-0002-V1.0",)).fetchone()
+        self.assertEqual(row["file_name"], "LIT_OTHER_LIT-00600_ROOT.pdf")
+
+    def test_apply_execute_renames_file_and_updates_db(self):
+        path = self._insert("DSR-REF-GRY-0003-V1.0", "DSR-REF-GRY-0003", "LIT_OTHER_LIT-00700_ROOT.pdf", ["LIT-00700"])
+        plan = migration.build_rename_plan(self.conn)
+        migration.apply_rename_plan(self.conn, plan, execute=True)
+        self.assertFalse(path.exists())
+        new_path = self.docs_dir / "LIT_OTHER_DSR-REF-GRY-0003_ROOT.pdf"
+        self.assertTrue(new_path.exists())
+        row = self.conn.execute("SELECT * FROM dsr_catalogue WHERE catalogue_id=?",
+                                 ("DSR-REF-GRY-0003-V1.0",)).fetchone()
+        self.assertEqual(row["file_name"], "LIT_OTHER_DSR-REF-GRY-0003_ROOT.pdf")
+        self.assertEqual(row["source_path"], str(new_path))
+
+    def test_repo_rollup_directory_is_skipped(self):
+        rollup_dir = self.tmp / "some-repo"
+        rollup_dir.mkdir()
+        self.conn.execute(
+            """
+            INSERT INTO dsr_catalogue (
+                catalogue_id, stable_id, version, file_name, relative_path, source_path,
+                class_code, subtype_code, confidence_status, status, legacy_ids_json,
+                created_date, modified_date, created_at, updated_at
+            ) VALUES ('DSR-COD-UNK-0001-V0.1', 'DSR-COD-UNK-0001', 'V0.1', 'some-repo', '.', ?,
+                      'COD', 'UNK', 'Requires Review', 'active', '["STD-00592"]',
+                      '2026-01-01', '2026-01-01', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')
+            """,
+            (str(rollup_dir),),
+        )
+        self.conn.commit()
+        plan = migration.build_rename_plan(self.conn)
+        self.assertEqual(plan, [])
+
+    def test_excluded_record_is_skipped(self):
+        self._insert("DSR-REF-GRY-0004-V1.0", "DSR-REF-GRY-0004", "LIT_OTHER_LIT-00800_ROOT.pdf",
+                      ["LIT-00800"], status="excluded")
+        plan = migration.build_rename_plan(self.conn)
+        self.assertEqual(plan, [])
+
+    def test_already_renamed_is_idempotent(self):
+        self._insert("DSR-REF-GRY-0005-V1.0", "DSR-REF-GRY-0005", "LIT_OTHER_DSR-REF-GRY-0005_ROOT.pdf", ["LIT-00900"])
+        plan = migration.build_rename_plan(self.conn)
+        self.assertEqual(plan[0]["status"], "already_renamed")
+
+    def test_target_exists_is_skipped_not_overwritten(self):
+        path = self._insert("DSR-REF-GRY-0006-V1.0", "DSR-REF-GRY-0006", "LIT_OTHER_LIT-01000_ROOT.pdf", ["LIT-01000"])
+        target = self.docs_dir / "LIT_OTHER_DSR-REF-GRY-0006_ROOT.pdf"
+        target.write_text("pre-existing different content", encoding="utf-8")
+        plan = migration.build_rename_plan(self.conn)
+        migration.apply_rename_plan(self.conn, plan, execute=True)
+        self.assertEqual(plan[0]["status"], "skipped_target_exists")
+        self.assertTrue(path.exists())
+        self.assertEqual(target.read_text(encoding="utf-8"), "pre-existing different content")
+
+
+class RewriteRegisterFilenamesTests(unittest.TestCase):
+    def test_filename_and_id_replaced_together(self):
+        text = (
+            "Source file:\n"
+            "instance/catalogued_files/documents/literature/LIT_OTHER_LIT-00535_ROOT.pdf (LIT-00535)\n"
+        )
+        new_text, report = migration.rewrite_register_source_lines(
+            text, {"LIT-00535": "DSR-REF-GRY-0076"},
+            filename_renames={"LIT_OTHER_LIT-00535_ROOT.pdf": "LIT_OTHER_DSR-REF-GRY-0076_ROOT.pdf"},
+        )
+        self.assertIn("LIT_OTHER_DSR-REF-GRY-0076_ROOT.pdf (DSR-REF-GRY-0076)", new_text)
+        self.assertNotIn("LIT_OTHER_LIT-00535_ROOT.pdf", new_text)
+        self.assertNotIn("LIT-00535)", new_text)
+        self.assertEqual(report["filenames_replaced"], {"LIT_OTHER_LIT-00535_ROOT.pdf": 1})
+
+    def test_annotated_line_still_converts_the_real_id_ignoring_trailing_prose(self):
+        # Regression: a Source file: line can carry an editorial note after
+        # the real id ("path (ID); note ... (see Notes)") - the trailing
+        # prose parenthetical must never be mistaken for the id, but the
+        # real id earlier on the line must still convert correctly.
+        text = (
+            "instance/catalogued_files/documents/literature/LIT_OTHER_LIT-00736_ROOT.pdf (LIT-00736); "
+            "note: corrected against the official PDF (see Notes)\n"
+        )
+        new_text, report = migration.rewrite_register_source_lines(
+            text, {"LIT-00736": "DSR-REF-GRY-0256"},
+            filename_renames={"LIT_OTHER_LIT-00736_ROOT.pdf": "LIT_OTHER_DSR-REF-GRY-0256_ROOT.pdf"},
+        )
+        self.assertIn("LIT_OTHER_DSR-REF-GRY-0256_ROOT.pdf (DSR-REF-GRY-0256)", new_text)
+        self.assertIn("(see Notes)", new_text)  # trailing prose untouched
+        self.assertNotIn("LIT-00736", new_text)
+        self.assertEqual(report["non_standard_lines"], 0)
+
+    def test_two_files_on_one_line_both_convert_independently(self):
+        # Regression: a Source file: line can genuinely list two files
+        # ("path (ID); path (ID)") - both must convert, not just the last.
+        text = (
+            "instance/catalogued_files/documents/STD_OTHER_STD-00434_ROOT.pdf (STD-00434); "
+            "instance/catalogued_files/documents/STD_OTHER_STD-00474_ROOT.pdf (STD-00474)\n"
+        )
+        new_text, report = migration.rewrite_register_source_lines(
+            text, {"STD-00434": "DSR-REF-GRY-0409", "STD-00474": "DSR-REF-GRY-0445"},
+            filename_renames={
+                "STD_OTHER_STD-00434_ROOT.pdf": "STD_OTHER_DSR-REF-GRY-0409_ROOT.pdf",
+                "STD_OTHER_STD-00474_ROOT.pdf": "STD_OTHER_DSR-REF-GRY-0445_ROOT.pdf",
+            },
+        )
+        self.assertIn("STD_OTHER_DSR-REF-GRY-0409_ROOT.pdf (DSR-REF-GRY-0409)", new_text)
+        self.assertIn("STD_OTHER_DSR-REF-GRY-0445_ROOT.pdf (DSR-REF-GRY-0445)", new_text)
+        self.assertNotIn("STD-00434", new_text)
+        self.assertNotIn("STD-00474", new_text)
+
+
+class FilenameAndIdBothChangeValidationTests(unittest.TestCase):
+    def test_register_filename_and_id_both_changing_still_passes(self):
+        original = (
+            "Source file:\n"
+            "instance/catalogued_files/documents/literature/LIT_OTHER_LIT-00535_ROOT.pdf (LIT-00535)\n"
+        )
+        updated = (
+            "Source file:\n"
+            "instance/catalogued_files/documents/literature/LIT_OTHER_DSR-REF-GRY-0076_ROOT.pdf (DSR-REF-GRY-0076)\n"
+        )
+        tmp = Path(tempfile.mkdtemp())
+        try:
+            o, u = tmp / "o.md", tmp / "u.md"
+            o.write_text(original, encoding="utf-8")
+            u.write_text(updated, encoding="utf-8")
+            ok, detail = migration.validate_content_preserved(o, u)
+            self.assertTrue(ok, detail)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 if __name__ == "__main__":

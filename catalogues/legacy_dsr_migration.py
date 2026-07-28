@@ -73,7 +73,11 @@ CROSSWALK_FIELDS = [
 # an already-migrated marker is a no-op, not a corruption.
 LEGACY_ID_TOKEN_RE = re.compile(r"\b([A-Z]{2,5}-\d{4,6})\b")
 INTERNAL_EVIDENCE_MARKER_RE = re.compile(r"\[INTERNAL EVIDENCE\s+—\s+[^\]]+\]")
-SOURCE_FILE_TRAILING_ID_RE = re.compile(r"\(([A-Z]{2,5}-\d{4,6})\)\s*$")
+# Not anchored to end-of-line - a Source file: line can carry more than one
+# file (path (ID); path (ID)) or a trailing editorial note after the id
+# ("path (ID); note ... (see Notes)"), so the real id marker(s) aren't
+# always the line's literal last parenthetical.
+SOURCE_FILE_ID_RE = re.compile(r"\(([A-Z]{2,5}-\d{4,6})\)")
 
 ROLLUP_CLASS_CODE = "COD"
 
@@ -149,7 +153,7 @@ def _insert_dsr_record(dsr_conn: sqlite3.Connection, *, legacy_id: str, path: Pa
     stat = path.stat()
     mime_type = None if is_directory else mimetypes.guess_type(path.name)[0]
     seq = dsr_catalogue.next_dsr_seq(dsr_conn, class_code, subtype_code)
-    stable_id = f"{project_code}-{class_code}-{subtype_code}-{seq:0{padding}d}"
+    stable_id = f"{project_code}-{dsr_catalogue.id_safe_class_token(class_code)}-{subtype_code}-{seq:0{padding}d}"
     catalogue_id = f"{stable_id}-{classification['version']}"
 
     dsr_conn.execute(
@@ -290,6 +294,100 @@ def load_crosswalk_map(csv_path: Path) -> dict:
 
 
 # --------------------------------------------------------------------------
+# Stage 1b: rename the catalogued copy's filename itself - a surgical swap
+# of just the legacy id token already embedded in the current filename for
+# the new DSR stable_id, nothing else in the filename changes. Never
+# touches a repo rollup (no single file to rename) or an excluded record.
+# --------------------------------------------------------------------------
+
+def build_rename_plan(dsr_conn: sqlite3.Connection) -> list[dict]:
+    plan: list[dict] = []
+    rows = dsr_conn.execute(
+        "SELECT * FROM dsr_catalogue WHERE status != 'excluded' ORDER BY catalogue_id"
+    ).fetchall()
+    for row in rows:
+        path = Path(row["source_path"])
+        if not path.exists() or path.is_dir():
+            continue  # repo rollup (no destination file) or missing file
+
+        if row["stable_id"] in row["file_name"]:
+            plan.append({
+                "catalogue_id": row["catalogue_id"], "status": "already_renamed",
+                "old_path": str(path), "new_path": str(path),
+                "old_filename": row["file_name"], "new_filename": row["file_name"],
+            })
+            continue
+
+        legacy_ids = json.loads(row["legacy_ids_json"] or "[]")
+        matched_legacy_id = next((lid for lid in legacy_ids if lid in row["file_name"]), None)
+        if matched_legacy_id is None:
+            plan.append({
+                "catalogue_id": row["catalogue_id"], "status": "no_legacy_token_found_in_filename",
+                "old_path": str(path), "new_path": "",
+                "old_filename": row["file_name"], "new_filename": "",
+            })
+            continue
+
+        new_filename = row["file_name"].replace(matched_legacy_id, row["stable_id"])
+        new_path = path.with_name(new_filename)
+        plan.append({
+            "catalogue_id": row["catalogue_id"], "status": "pending",
+            "old_path": str(path), "new_path": str(new_path),
+            "old_filename": row["file_name"], "new_filename": new_filename,
+        })
+    return plan
+
+
+def apply_rename_plan(dsr_conn: sqlite3.Connection, plan: list[dict], execute: bool) -> list[dict]:
+    """execute=False returns the plan untouched (preview only - nothing on
+    disk or in the DB is touched). execute=True actually renames each
+    "pending" file in place (same directory, filename only) and updates
+    that row's file_name/relative_path/source_path so the physical file and
+    the database can never go out of sync with each other."""
+    if not execute:
+        return plan
+    now = datetime.now(timezone.utc).isoformat()
+    for item in plan:
+        if item["status"] != "pending":
+            continue
+        old_path = Path(item["old_path"])
+        new_path = Path(item["new_path"])
+        if new_path.exists():
+            item["status"] = "skipped_target_exists"
+            continue
+        old_path.rename(new_path)
+        dsr_conn.execute(
+            "UPDATE dsr_catalogue SET file_name = ?, relative_path = ?, source_path = ?, updated_at = ? "
+            "WHERE catalogue_id = ?",
+            (item["new_filename"], item["new_filename"], str(new_path), now, item["catalogue_id"]),
+        )
+        item["status"] = "renamed"
+    dsr_conn.commit()
+    return plan
+
+
+def write_rename_log_csv(plan: list[dict], out_path: Path) -> None:
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with out_path.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=["catalogue_id", "status", "old_path", "new_path",
+                                                 "old_filename", "new_filename"])
+        writer.writeheader()
+        writer.writerows(plan)
+
+
+def load_rename_map(csv_path: Path, statuses: tuple = ("renamed",)) -> dict:
+    """old_filename -> new_filename, restricted to rows whose status is in
+    `statuses` - default only rows that were actually renamed for real, so a
+    stale/preview log can't be mistaken for a completed rename."""
+    mapping: dict = {}
+    with csv_path.open(encoding="utf-8") as fh:
+        for row in csv.DictReader(fh):
+            if row["status"] in statuses and row["new_filename"]:
+                mapping[row["old_filename"]] = row["new_filename"]
+    return mapping
+
+
+# --------------------------------------------------------------------------
 # Stage 2: reference rewriting (always to a copy - target file is only ever
 # read, never written, in this stage)
 # --------------------------------------------------------------------------
@@ -316,22 +414,53 @@ def rewrite_internal_evidence_markers(text: str, crosswalk: dict) -> tuple[str, 
     return new_text, {"replaced": replaced, "unmapped": unmapped}
 
 
-def rewrite_register_source_lines(text: str, crosswalk: dict) -> tuple[str, dict]:
+def rewrite_register_source_lines(text: str, crosswalk: dict, filename_renames: dict | None = None) -> tuple[str, dict]:
+    """Handles every id-shaped parenthetical on a Source file: line, not
+    just the last one - a line can carry more than one file
+    ("path (ID); path (ID)") or a trailing editorial note after the id
+    ("path (ID); note ... (see Notes)"). filename_renames is applied first,
+    as a plain global substring replace (safe: real catalogue filenames are
+    unique strings, and a prose parenthetical never contains one), then
+    every id-shaped token found anywhere on the line is swapped
+    independently - so a multi-file line gets both ids updated, and an
+    annotated line's trailing prose is never mistaken for part of the id."""
     replaced: dict = {}
     unmapped: dict = {}
+    filenames_replaced: dict = {}
+    non_standard = 0
     out_lines = []
     for line in text.split("\n"):
-        m = SOURCE_FILE_TRAILING_ID_RE.search(line)
-        if m and line.startswith("instance/catalogued_files/"):
+        if not line.startswith("instance/catalogued_files/"):
+            out_lines.append(line)
+            continue
+        if not SOURCE_FILE_ID_RE.search(line):
+            non_standard += 1
+            out_lines.append(line)
+            continue
+
+        new_line = line
+        if filename_renames:
+            for old_name, new_name in filename_renames.items():
+                count = new_line.count(old_name)
+                if count:
+                    new_line = new_line.replace(old_name, new_name)
+                    filenames_replaced[old_name] = filenames_replaced.get(old_name, 0) + count
+
+        def _sub_id(m: re.Match) -> str:
             token = m.group(1)
             new_id = crosswalk.get(token)
             if new_id is None:
                 unmapped[token] = unmapped.get(token, 0) + 1
-            else:
-                replaced[token] = replaced.get(token, 0) + 1
-                line = line[:m.start()] + f"({new_id})"
-        out_lines.append(line)
-    return "\n".join(out_lines), {"replaced": replaced, "unmapped": unmapped}
+                return m.group(0)
+            replaced[token] = replaced.get(token, 0) + 1
+            return f"({new_id})"
+
+        new_line = SOURCE_FILE_ID_RE.sub(_sub_id, new_line)
+        out_lines.append(new_line)
+    return "\n".join(out_lines), {
+        "replaced": replaced, "unmapped": unmapped,
+        "filenames_replaced": filenames_replaced, "non_standard_lines": non_standard,
+    }
 
 
 def apply_references(target_path: Path, out_path: Path, crosswalk: dict) -> dict:
@@ -342,9 +471,10 @@ def apply_references(target_path: Path, out_path: Path, crosswalk: dict) -> dict
     return report
 
 
-def apply_register(target_path: Path, out_path: Path, crosswalk: dict) -> dict:
+def apply_register(target_path: Path, out_path: Path, crosswalk: dict,
+                    filename_renames: dict | None = None) -> dict:
     text = target_path.read_text(encoding="utf-8")
-    new_text, report = rewrite_register_source_lines(text, crosswalk)
+    new_text, report = rewrite_register_source_lines(text, crosswalk, filename_renames)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(new_text, encoding="utf-8")
     return report
@@ -356,14 +486,15 @@ def apply_register(target_path: Path, out_path: Path, crosswalk: dict) -> dict:
 
 def _strip_reference_spans(text: str) -> str:
     text = INTERNAL_EVIDENCE_MARKER_RE.sub("[INTERNAL EVIDENCE]", text)
-    # Matches both the legacy id shape (LIT-00535) and the DSR stable_id
-    # shape (DSR-REF-GRY-0076, i.e. an arbitrary number of hyphen-joined
-    # uppercase/digit segments) - a pre/post-migration comparison must
-    # recognise either as "a reference token", not just the one the file
-    # started with, or a correct rewrite reads as a false content change.
+    # A Source file: reference line can now legitimately change in full -
+    # both the catalogued filename (a real on-disk rename) and the trailing
+    # id together - so the whole line is normalised to a placeholder rather
+    # than trying to compare filename and id separately. Every line
+    # starting with this literal prefix in the register is one of these
+    # reference lines (verified: none appear without a trailing id).
     text = re.sub(
-        r"^(instance/catalogued_files/.*)\([A-Z0-9]+(?:-[A-Z0-9]+)+\)\s*$",
-        r"\1(ID)", text, flags=re.MULTILINE,
+        r"^instance/catalogued_files/.*$",
+        "instance/catalogued_files/<REFERENCE>", text, flags=re.MULTILINE,
     )
     return text
 

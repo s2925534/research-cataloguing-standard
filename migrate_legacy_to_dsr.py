@@ -21,10 +21,22 @@ Usage:
         because it never writes to --target, only to --out.
 
     python3 migrate_legacy_to_dsr.py apply-register --target PATH --out PATH
-            [--crosswalk PATH]
+            [--crosswalk PATH] [--rename-log PATH]
         Same, for a citation_evidence_register.md-style file: rewrites the
         trailing "(LEGACY-ID)" parenthetical on lines starting with
-        instance/catalogued_files/.
+        instance/catalogued_files/. --rename-log (a rename-files output,
+        "renamed" rows only) also updates the embedded filename itself so
+        the line matches what rename-files actually did on disk.
+
+    python3 migrate_legacy_to_dsr.py rename-files [--dry-run|--apply]
+        Renames each active, non-excluded, non-rollup catalogued file in
+        place: finds the legacy id token already embedded in its current
+        filename and replaces just that token with its DSR stable_id -
+        nothing else in the filename changes. Updates
+        file_name/relative_path/source_path in catalogue_dsr.db to match.
+        Writes a rename_log.csv (every row, whatever its status) next to
+        the crosswalk CSV - feed that to apply-register's --rename-log.
+        Dry-run by default.
 
     python3 migrate_legacy_to_dsr.py validate --original PATH --updated PATH
         Strips catalogue-reference spans from both files and asserts the
@@ -125,14 +137,53 @@ def cmd_apply_references(args: list[str], register: bool) -> int:
         raise SystemExit("apply-references/apply-register requires --target PATH --out PATH")
 
     crosswalk = migration.load_crosswalk_map(Path(crosswalk_path))
-    fn = migration.apply_register if register else migration.apply_references
-    report = fn(Path(target), Path(out), crosswalk)
+    if register:
+        rename_log = _flag_value(args, "--rename-log")
+        filename_renames = migration.load_rename_map(Path(rename_log)) if rename_log else None
+        report = migration.apply_register(Path(target), Path(out), crosswalk, filename_renames=filename_renames)
+    else:
+        report = migration.apply_references(Path(target), Path(out), crosswalk)
     print(f"Rewrote {sum(report['replaced'].values())} reference token(s) "
           f"({len(report['replaced'])} distinct legacy ID(s)) in {migration.display_path(Path(out))}")
+    if report.get("filenames_replaced"):
+        print(f"Also updated {sum(report['filenames_replaced'].values())} embedded filename reference(s) "
+              f"({len(report['filenames_replaced'])} distinct file(s))")
     if report["unmapped"]:
         print(f"WARNING: {sum(report['unmapped'].values())} reference token(s) had no crosswalk entry, left as-is:")
         for token, count in sorted(report["unmapped"].items()):
             print(f"  {token} (x{count})")
+    if report.get("non_standard_lines"):
+        print(f"WARNING: {report['non_standard_lines']} Source file: line(s) don't end in a clean id "
+              f"(e.g. an editorial annotation after the id) - left completely untouched, needs manual attention")
+    return 0
+
+
+def cmd_rename_files(args: list[str]) -> int:
+    dry_run = "--dry-run" in args
+    apply = "--apply" in args
+    if dry_run == apply:
+        raise SystemExit("rename-files requires exactly one of --dry-run or --apply")
+
+    conn = dsr_catalogue.get_dsr_db()
+    plan = migration.build_rename_plan(conn)
+    plan = migration.apply_rename_plan(conn, plan, execute=apply)
+    conn.close()
+
+    by_status: dict = {}
+    for item in plan:
+        by_status.setdefault(item["status"], 0)
+        by_status[item["status"]] += 1
+    verb = "renamed" if apply else "WOULD be renamed"
+    print(f"{by_status.get('renamed' if apply else 'pending', 0)} file(s) {verb}")
+    for status, count in sorted(by_status.items()):
+        if status not in ("renamed", "pending"):
+            print(f"  {count} {status}")
+
+    log_path = migration.CROSSWALK_CSV_PATH.parent / "rename_log.csv"
+    migration.write_rename_log_csv(plan, log_path)
+    print(f"Full plan written to {migration.display_path(log_path)}")
+    if not apply:
+        print("Nothing renamed on disk or in the database - pass --apply to execute this plan.")
     return 0
 
 
@@ -198,6 +249,8 @@ def main() -> int:
         return cmd_apply_references(args, register=False)
     if command == "apply-register":
         return cmd_apply_references(args, register=True)
+    if command == "rename-files":
+        return cmd_rename_files(args)
     if command == "validate":
         return cmd_validate(args)
     if command == "promote":

@@ -102,6 +102,18 @@ NOT_ASSIGNED = "Not Assigned"
 NOT_APPLICABLE = "Not Applicable"
 UNKNOWN = "Unknown"
 
+# Stable IDs get embedded directly in real filenames (see
+# legacy_dsr_migration.py's rename-files command) and must never contain a
+# space or mixed case - REQUIRES_REVIEW ("Requires Review") is a human-
+# readable status sentinel, not a real class code, so it's never used
+# literally when minting an id string. Only the id STRING is affected; the
+# class_code column value itself stays "Requires Review" everywhere else.
+ID_SAFE_UNRESOLVED_CLASS_TOKEN = "UNC"
+
+
+def id_safe_class_token(class_code: str) -> str:
+    return ID_SAFE_UNRESOLVED_CLASS_TOKEN if class_code == REQUIRES_REVIEW else class_code
+
 # Subtype used only when class_code == ART but no deterministic artefact rule
 # matched (Step 10: never guess a real subtype). Not part of the ART subtype
 # vocabulary above - flagged Requires Review everywhere it appears.
@@ -752,7 +764,7 @@ def _run_scan(conn: sqlite3.Connection, project_config: dict, env: dict, rules: 
             classification = classify_file(path, source_root, rules)
             class_code, subtype_code = classification["class_code"], classification["subtype_code"]
             seq = next_dsr_seq(conn, class_code, subtype_code)
-            stable_id = f"{project_code}-{class_code}-{subtype_code}-{seq:0{padding}d}"
+            stable_id = f"{project_code}-{id_safe_class_token(class_code)}-{subtype_code}-{seq:0{padding}d}"
             catalogue_id = f"{stable_id}-{classification['version']}"
             mime_type, _ = mimetypes.guess_type(path.name)
 
