@@ -44,10 +44,14 @@ Usage:
         if not.
 
     python3 migrate_legacy_to_dsr.py promote --live PATH --new PATH
-            [--archive-dir PATH] [--dry-run|--apply]
+            [--archive-dir PATH] [--label TEXT] [--dry-run|--apply]
         Backs --live up to a timestamped file under --archive-dir (default:
         <live's parent>/archive/), then overwrites --live with --new's
-        content. Dry-run by default; requires --apply to write anything.
+        content. --label (default "pre-dsr-migration") names what's being
+        promoted in the backup filename - override it for a non-DSR
+        promotion (e.g. --label "pre-gap-audit-fixes") so the backup
+        doesn't misleadingly claim to be a DSR-migration snapshot.
+        Dry-run by default; requires --apply to write anything.
 
     python3 migrate_legacy_to_dsr.py report [--crosswalk PATH]
         Prints crosswalk coverage stats from an already-built crosswalk CSV.
@@ -207,6 +211,7 @@ def cmd_promote(args: list[str]) -> int:
     if not live or not new:
         raise SystemExit("promote requires --live PATH --new PATH")
     archive_dir = _flag_value(args, "--archive-dir")
+    label = _flag_value(args, "--label") or "pre-dsr-migration"
     live_path = Path(live)
     archive_path = Path(archive_dir) if archive_dir else live_path.parent / "archive"
 
@@ -217,11 +222,11 @@ def cmd_promote(args: list[str]) -> int:
 
     if not apply:
         print(f"--dry-run: WOULD back up {migration.display_path(live_path)} to "
-              f"{migration.display_path(archive_path)}/<name>_pre-dsr-migration_<timestamp>{live_path.suffix}, "
+              f"{migration.display_path(archive_path)}/<name>_{label}_<timestamp>{live_path.suffix}, "
               f"then WOULD overwrite it with {migration.display_path(Path(new))}. Nothing written.")
         return 0
 
-    backup_path = migration.promote(live_path, Path(new), archive_path)
+    backup_path = migration.promote(live_path, Path(new), archive_path, label=label)
     print(f"Backed up {migration.display_path(live_path)} -> {migration.display_path(backup_path)}")
     print(f"{migration.display_path(live_path)} is now the content from {migration.display_path(Path(new))}")
     return 0

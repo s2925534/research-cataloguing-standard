@@ -512,10 +512,11 @@ def validate_content_preserved(original_path: Path, updated_path: Path) -> tuple
     return False, diff
 
 
-def promote(live_path: Path, new_content_path: Path, archive_dir: Path) -> Path:
+def promote(live_path: Path, new_content_path: Path, archive_dir: Path,
+            label: str = "pre-dsr-migration") -> Path:
     archive_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H%M%SZ")
-    backup_path = archive_dir / f"{live_path.stem}_pre-dsr-migration_{timestamp}{live_path.suffix}"
+    backup_path = archive_dir / f"{live_path.stem}_{label}_{timestamp}{live_path.suffix}"
     if backup_path.exists():
         raise SystemExit(f"Backup path already exists, refusing to overwrite: {backup_path}")
     shutil.copy2(live_path, backup_path)

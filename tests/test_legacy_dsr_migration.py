@@ -323,6 +323,19 @@ class PromoteTests(unittest.TestCase):
         self.assertEqual(live.read_text(encoding="utf-8"), "new content")
         self.assertEqual(backup_path.read_text(encoding="utf-8"), "old content")
         self.assertTrue(backup_path.parent == archive_dir)
+        self.assertIn("pre-dsr-migration", backup_path.name)  # default label
+
+    def test_promote_label_is_overridable(self):
+        live = self.tmp / "live.md"
+        live.write_text("old content", encoding="utf-8")
+        new = self.tmp / "new.md"
+        new.write_text("new content", encoding="utf-8")
+        archive_dir = self.tmp / "archive"
+
+        backup_path = migration.promote(live, new, archive_dir, label="pre-gap-audit-fixes")
+
+        self.assertIn("pre-gap-audit-fixes", backup_path.name)
+        self.assertNotIn("pre-dsr-migration", backup_path.name)
 
     def test_promote_refuses_to_clobber_existing_backup(self):
         live = self.tmp / "live.md"
