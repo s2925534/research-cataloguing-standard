@@ -10,3 +10,8 @@ __pycache__/
 # templates/ holds the committed, reusable, project-agnostic versions instead.
 instance/
 updatesPrompt.txt
+
+# Personal/non-research files purged from the catalogue (resumes, cover
+# letters, other job-application material, credential recovery codes) -
+# kept locally for whoever runs this tool, never tracked by git.
+unrelated_to_thesis/
