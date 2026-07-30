@@ -42,6 +42,8 @@ import re
 import shutil
 import sqlite3
 import tempfile
+import urllib.error
+import urllib.request
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -100,6 +102,18 @@ NOT_ASSIGNED = "Not Assigned"
 NOT_APPLICABLE = "Not Applicable"
 UNKNOWN = "Unknown"
 
+# Stable IDs get embedded directly in real filenames (see
+# legacy_dsr_migration.py's rename-files command) and must never contain a
+# space or mixed case - REQUIRES_REVIEW ("Requires Review") is a human-
+# readable status sentinel, not a real class code, so it's never used
+# literally when minting an id string. Only the id STRING is affected; the
+# class_code column value itself stays "Requires Review" everywhere else.
+ID_SAFE_UNRESOLVED_CLASS_TOKEN = "UNC"
+
+
+def id_safe_class_token(class_code: str) -> str:
+    return ID_SAFE_UNRESOLVED_CLASS_TOKEN if class_code == REQUIRES_REVIEW else class_code
+
 # Subtype used only when class_code == ART but no deterministic artefact rule
 # matched (Step 10: never guess a real subtype). Not part of the ART subtype
 # vocabulary above - flagged Requires Review everywhere it appears.
@@ -116,7 +130,10 @@ EXCLUDED_DIR_NAMES = {
 }
 EXCLUDED_FILENAME_PREFIXES = ("~$",)
 EXCLUDED_FILENAMES = {".DS_Store"}
-EXCLUDED_SUFFIXES = (".tmp", ".bak", ".swp")
+# .exe/.dmg: application installers, never a research artefact regardless of
+# project - excluded at Step 1 so a scan never catalogues one in the first
+# place, rather than relying on a post-hoc Requires Review + manual exclude.
+EXCLUDED_SUFFIXES = (".tmp", ".bak", ".swp", ".exe", ".dmg")
 
 
 def is_excluded(path: Path, source_root: Path) -> bool:
@@ -144,6 +161,7 @@ DEFAULT_EXTENSION_MAP = {
     # Documents
     ".docx": ("DOC", "WRK"), ".doc": ("DOC", "WRK"), ".odt": ("DOC", "WRK"),
     ".rtf": ("DOC", "WRK"), ".md": ("DOC", "WRK"), ".txt": ("DOC", "WRK"),
+    ".html": ("DOC", "WRK"), ".htm": ("DOC", "WRK"),
     ".tex": ("DOC", "THS"),
     # Structured data
     ".csv": ("DAT", "CSV"), ".tsv": ("DAT", "CSV"),
@@ -248,6 +266,43 @@ DEFAULT_DIRECTORY_CLASS_MAP = [
 ]
 
 VERSION_TOKEN_RE = re.compile(r"(?:^|[_\-. ])[vV](\d+)(?:[._](\d+))?(?:[_\-. ]|$)")
+
+
+def _known_subtypes_by_class() -> dict[str, set[str]]:
+    """Every (class_code, subtype_code) pair this engine's own deterministic
+    rules can ever produce - the closed vocabulary --ai-decide-review must
+    validate an AI-proposed classification against. Built from the rule
+    tables themselves (not hand-maintained separately) so it can never drift
+    out of sync with what the deterministic rules actually assign."""
+    by_class: dict[str, set[str]] = {}
+
+    def add(cls: str, sub: str) -> None:
+        by_class.setdefault(cls, set()).add(sub)
+
+    for cls, sub in DEFAULT_EXTENSION_MAP.values():
+        add(cls, sub)
+    for _, sub in IMAGE_TOKEN_SUBTYPE:
+        add("IMG", sub)
+    for _, sub in CODE_TOKEN_SUBTYPE:
+        add("COD", sub)
+    for _, sub in REC_TOKEN_SUBTYPE:
+        add("REC", sub)
+    for _, sub in VAL_TOKEN_SUBTYPE:
+        add("VAL", sub)
+    for _, sub in ADM_TOKEN_SUBTYPE:
+        add("ADM", sub)
+    for sub in ARTEFACT_SUBTYPES:
+        add("ART", sub)
+    for sub in ("JRN", "CNF", "BOK", "STD", "GOV", "GRY"):  # PDF-branch reference subtypes
+        add("REF", sub)
+    add("DOC", "RPT")
+    add("DAT", "SQL")
+    add("COD", "SQL")
+    return by_class
+
+
+KNOWN_SUBTYPES_BY_CLASS = _known_subtypes_by_class()
+AI_ASSIGNED = "AI-Assigned"
 
 
 def default_dsr_rules() -> dict:
@@ -441,10 +496,56 @@ def _find_token(name_lower: str, token_subtype: list[tuple[str, str]]) -> str | 
     return None
 
 
+def _sniff_extensionless_content(path: Path, rel_lower: str) -> tuple[str, str, str, str] | None:
+    """Step 5 continuation for files with no extension at all: a missing
+    extension isn't the same as unrecognisable content, and a cheap magic-
+    byte/prefix check on the first 512 bytes resolves a real, common case
+    (files that lost their extension somewhere along the way - a browser
+    "save as", an email export, a raw API response dump) deterministically,
+    the same way the extension map does for files that kept theirs. Returns
+    None (falls through to Requires Review, same as any other unmapped
+    case) rather than guessing when nothing recognisable matches."""
+    try:
+        with path.open("rb") as fh:
+            head = fh.read(512)
+    except OSError:
+        return None
+
+    if head.startswith(b"%PDF-"):
+        if any(marker in rel_lower for marker in ("/references/", "/literature/")):
+            return "REF", "GRY", "content_sniff:pdf_no_extension", "no extension, content is PDF (%PDF- magic bytes), under references/literature dir"
+        if any(marker in rel_lower for marker in ("/documents/", "/reports/")):
+            return "DOC", "RPT", "content_sniff:pdf_no_extension", "no extension, content is PDF (%PDF- magic bytes), under documents/reports dir"
+        return "REF", "GRY", "content_sniff:pdf_no_extension", "no extension, content is PDF (%PDF- magic bytes), no directory signal"
+
+    stripped = head.lstrip()
+    if stripped[:15].lower().startswith(b"<!doctype html") or stripped[:5].lower().startswith(b"<html"):
+        return "DOC", "WRK", "content_sniff:html_no_extension", "no extension, content starts with an HTML doctype/tag"
+
+    if stripped[:1] in (b"{", b"["):
+        try:
+            json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+            pass
+        else:
+            return "DAT", "JSE", "content_sniff:json_no_extension", "no extension, content parses as valid JSON"
+
+    mail_headers = (b"From:", b"Return-Path:", b"Delivered-To:", b"Received:", b"Message-ID:")
+    if any(head.startswith(h) for h in mail_headers):
+        return "REC", "COR", "content_sniff:email_no_extension", "no extension, content starts with an RFC 822 mail header"
+
+    return None
+
+
 def _classify_extension(path: Path, rel_lower: str, name_lower: str) -> tuple[str, str, str, str]:
     """Returns (class_code, subtype_code, rule, evidence) purely from
     extension + filename tokens (Step 5), before any directory override."""
     ext = path.suffix.lower()
+
+    if not ext:
+        sniffed = _sniff_extensionless_content(path, rel_lower)
+        if sniffed:
+            return sniffed
 
     if ext == ".sql":
         if any(t in name_lower for t in SQL_DUMP_TOKENS):
@@ -663,7 +764,7 @@ def _run_scan(conn: sqlite3.Connection, project_config: dict, env: dict, rules: 
             classification = classify_file(path, source_root, rules)
             class_code, subtype_code = classification["class_code"], classification["subtype_code"]
             seq = next_dsr_seq(conn, class_code, subtype_code)
-            stable_id = f"{project_code}-{class_code}-{subtype_code}-{seq:0{padding}d}"
+            stable_id = f"{project_code}-{id_safe_class_token(class_code)}-{subtype_code}-{seq:0{padding}d}"
             catalogue_id = f"{stable_id}-{classification['version']}"
             mime_type, _ = mimetypes.guess_type(path.name)
 
@@ -756,7 +857,11 @@ def _run_migrate(conn: sqlite3.Connection, rules: dict) -> list[dict]:
     rows = conn.execute("SELECT * FROM dsr_catalogue ORDER BY catalogue_id").fetchall()
     for row in rows:
         source_path = Path(row["source_path"])
-        if not source_path.exists():
+        # A directory (a legacy_dsr_migration.py repo-rollup entry) isn't a
+        # classifiable file - classify_file() would fall through to the
+        # unmapped-extension case and clobber the rollup's real COD
+        # classification with the generic "Requires Review" fallback.
+        if not source_path.exists() or source_path.is_dir():
             continue
         # Re-derive source_root as the longest known ancestor isn't stored;
         # relative_path + source_path together are enough to reconstruct it.
@@ -788,18 +893,153 @@ def _run_migrate(conn: sqlite3.Connection, rules: dict) -> list[dict]:
     return changes
 
 
-def cmd_migrate(project_config: dict, env: dict, dry_run: bool, apply: bool) -> None:
+def _ssl_context():
+    """Uses certifi's CA bundle when available - the stock python.org macOS
+    build doesn't install root certificates, which otherwise breaks HTTPS
+    verification for this one outbound call."""
+    try:
+        import certifi
+        import ssl
+
+        return ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        return None
+
+
+def _ai_decide_classification(api_key: str, file_name: str, content_preview: str,
+                               current_evidence: str) -> dict | None:
+    """--ai-decide-review: for a record classify_file() already tried and
+    left in Requires Review, ask an LLM to pick a class/subtype from this
+    engine's own closed vocabulary (KNOWN_SUBTYPES_BY_CLASS) - never an
+    invented one - using the file's actual content. Returns None on any
+    failure, timeout, or a response that doesn't validate against that
+    vocabulary; the caller leaves the record in Requires Review rather than
+    accept an unvalidated guess, matching this engine's "never guess" rule
+    for every other classification step."""
+    if not api_key:
+        return None
+    vocab_lines = [
+        f"{cls}: {', '.join(sorted(KNOWN_SUBTYPES_BY_CLASS.get(cls, set()))) or '(no fixed subtype list - leave subtype_code empty)'}"
+        for cls in MAIN_CLASSES
+    ]
+    prompt = (
+        f"File name: {file_name}\n"
+        f"Why deterministic (extension/directory/filename-token) classification couldn't resolve it: {current_evidence}\n"
+        f"Content preview (first ~2000 characters):\n{content_preview[:2000]}\n\n"
+        "Classify this file using ONLY the DSR main classes and subtype codes listed below - "
+        "never invent a class or subtype code not on this list:\n" + "\n".join(vocab_lines) +
+        "\n\nReply with strict JSON only, no other text, in this exact shape: "
+        '{"class_code": "<one class code from the list>", '
+        '"subtype_code": "<one subtype code listed for that class, or empty string if that class has no fixed list>", '
+        '"reasoning": "<one sentence, based only on the content shown above>"}'
+    )
+    payload = json.dumps({
+        "model": "gpt-4o-mini",
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0,
+        "max_tokens": 250,
+        "response_format": {"type": "json_object"},
+    }).encode("utf-8")
+    request = urllib.request.Request(
+        "https://api.openai.com/v1/chat/completions",
+        data=payload,
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30, context=_ssl_context()) as response:
+            result = json.loads(response.read())
+        parsed = json.loads(result["choices"][0]["message"]["content"])
+        cls, sub = parsed.get("class_code"), parsed.get("subtype_code") or ""
+        reasoning = parsed.get("reasoning", "")
+    except (urllib.error.URLError, KeyError, IndexError, json.JSONDecodeError, TimeoutError, OSError):
+        return None
+
+    known_subs = KNOWN_SUBTYPES_BY_CLASS.get(cls)
+    if cls not in MAIN_CLASSES:
+        return None
+    if known_subs and sub not in known_subs:
+        return None
+    if not known_subs:
+        sub = sub or ART_UNRESOLVED_SUBTYPE
+    return {"class_code": cls, "subtype_code": sub, "reasoning": reasoning}
+
+
+def _run_ai_decide_review(conn: sqlite3.Connection, api_key: str) -> list[dict]:
+    """Second pass, after _run_migrate: for whatever's still Requires Review
+    and not excluded, and has a real (non-directory) file behind it, ask
+    _ai_decide_classification to resolve it. Marked confidence_status =
+    AI_ASSIGNED (not "Confident") so an AI-derived classification is never
+    silently indistinguishable from a deterministically-derived one -
+    consistent with this project's standing rule that AI output is never
+    treated as equivalent to verified/deterministic evidence."""
+    changes = []
+    now = datetime.now(timezone.utc).isoformat()
+    rows = conn.execute(
+        "SELECT * FROM dsr_catalogue WHERE confidence_status = ? AND status != 'excluded' ORDER BY catalogue_id",
+        (REQUIRES_REVIEW,),
+    ).fetchall()
+    for row in rows:
+        source_path = Path(row["source_path"])
+        if not source_path.exists() or source_path.is_dir():
+            continue
+        try:
+            content_preview = source_path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            content_preview = ""
+        if not content_preview.strip():
+            continue
+
+        decision = _ai_decide_classification(api_key, row["file_name"], content_preview,
+                                              row["classification_evidence"] or "")
+        if decision is None:
+            continue
+
+        dsr_artefact_type = (
+            ARTEFACT_SUBTYPE_TO_CLASSIFICATION.get(decision["subtype_code"], NOT_ASSIGNED)
+            if decision["class_code"] == "ART" else NOT_APPLICABLE
+        )
+        conn.execute(
+            "UPDATE dsr_catalogue SET class_code=?, subtype_code=?, dsr_artefact_type=?, "
+            "classification_rule=?, classification_evidence=?, confidence_status=?, updated_at=? "
+            "WHERE catalogue_id=?",
+            (
+                decision["class_code"], decision["subtype_code"], dsr_artefact_type,
+                "ai_decided:--ai-decide-review", f"AI-assigned: {decision['reasoning']}",
+                AI_ASSIGNED, now, row["catalogue_id"],
+            ),
+        )
+        changes.append({
+            "catalogue_id": row["catalogue_id"], "stable_id": row["stable_id"],
+            "changed_fields": {
+                "class_code": (row["class_code"], decision["class_code"]),
+                "subtype_code": (row["subtype_code"], decision["subtype_code"]),
+                "confidence_status": (row["confidence_status"], AI_ASSIGNED),
+            },
+        })
+    conn.commit()
+    return changes
+
+
+def cmd_migrate(project_config: dict, env: dict, dry_run: bool, apply: bool,
+                 ai_decide_review: bool = False) -> None:
     if dry_run == apply:
         raise SystemExit("migrate --dsr requires exactly one of --dry-run or --apply")
     rules = load_dsr_rules(project_config)
+    api_key = env.get("OPENAI_API_KEY") if ai_decide_review else None
+    if ai_decide_review and not api_key:
+        raise SystemExit("migrate --dsr --ai-decide-review requires OPENAI_API_KEY in instance/.env")
 
     if apply:
         conn = get_dsr_db()
         changes = _run_migrate(conn, rules)
+        ai_changes = _run_ai_decide_review(conn, api_key) if ai_decide_review else []
         conn.close()
         DSR_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-        _write_migration_log(changes)
-        print(f"DSR migrate (applied): {len(changes)} records reclassified -> {display_path(DSR_MIGRATION_LOG_CSV)}")
+        _write_migration_log(changes + ai_changes)
+        print(f"DSR migrate (applied): {len(changes)} records reclassified deterministically"
+              + (f", {len(ai_changes)} AI-assigned via --ai-decide-review" if ai_decide_review else "")
+              + f" -> {display_path(DSR_MIGRATION_LOG_CSV)}")
         return
 
     tmp_dir = Path(tempfile.mkdtemp(prefix="dsr_migrate_dry_run_"))
@@ -808,11 +1048,15 @@ def cmd_migrate(project_config: dict, env: dict, dry_run: bool, apply: bool) -> 
         shutil.copy2(DSR_DB_PATH, tmp_db_path)
     conn = get_dsr_db(tmp_db_path)
     changes = _run_migrate(conn, rules)
+    ai_changes = _run_ai_decide_review(conn, api_key) if ai_decide_review else []
     conn.close()
-    print(f"DSR migrate (--dry-run): {len(changes)} records WOULD be reclassified.")
+    print(f"DSR migrate (--dry-run): {len(changes)} records WOULD be reclassified deterministically"
+          + (f", {len(ai_changes)} WOULD be AI-assigned via --ai-decide-review" if ai_decide_review else "") + ".")
     for change in changes[:20]:
         print(f"  {change['catalogue_id']}: {change['changed_fields']}")
-    print(f"Nothing written to {display_path(DSR_DB_PATH)}.")
+    for change in ai_changes[:20]:
+        print(f"  [AI] {change['catalogue_id']}: {change['changed_fields']}")
+    print(f"Nothing written to {display_path(DSR_DB_PATH)}. This still made real API calls (--ai-decide-review previews cost the same as applying).")
 
 
 def _write_migration_log(changes: list[dict]) -> None:

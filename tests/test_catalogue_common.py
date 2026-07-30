@@ -27,6 +27,14 @@ class ExclusionTests(unittest.TestCase):
         root = Path("/proj")
         self.assertFalse(common.is_excluded(root / "docs" / "report.docx", root))
 
+    def test_exe_installer_excluded(self):
+        root = Path("/proj")
+        self.assertTrue(common.is_excluded(root / "some-app-setup.exe", root))
+
+    def test_dmg_installer_excluded(self):
+        root = Path("/proj")
+        self.assertTrue(common.is_excluded(root / "GoogleChrome.dmg", root))
+
 
 class IterSourceFilesTests(unittest.TestCase):
     def test_skips_excluded_and_symlinks(self):

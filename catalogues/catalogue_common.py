@@ -51,7 +51,10 @@ EXCLUDED_DIR_NAMES = {
 }
 EXCLUDED_FILENAME_PREFIXES = ("~$",)
 EXCLUDED_FILENAMES = {".DS_Store"}
-EXCLUDED_SUFFIXES = (".tmp", ".bak", ".swp")
+# .exe/.dmg: application installers, never a research artefact regardless of
+# project - excluded at Step 1 so a scan never catalogues one in the first
+# place, rather than relying on a post-hoc Requires Review + manual exclude.
+EXCLUDED_SUFFIXES = (".tmp", ".bak", ".swp", ".exe", ".dmg")
 
 
 def is_excluded(path: Path, source_root: Path) -> bool:
