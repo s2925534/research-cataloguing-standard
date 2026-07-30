@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Document Review</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/style.css">
+<script>
+  // Applied synchronously, before first paint, so a stored preference never
+  // flashes the wrong theme. Mirrors the zqx project's theme-toggle pattern.
+  (function () {
+    try {
+      var stored = window.localStorage.getItem("review-theme");
+      if (stored === "light" || stored === "dark") {
+        document.documentElement.setAttribute("data-theme", stored);
+      }
+    } catch (e) {}
+  })();
+</script>
+</head>
+<body>
+<header id="toolbar">
+  <div id="toolbar-left">
+    <strong>Document Review</strong>
+    <span id="counts">loading…</span>
+    <span id="citation-counts"></span>
+  </div>
+  <div id="toolbar-right">
+    <button id="accept-all-citations-btn" class="bulk-action-btn" type="button" title="Accept every citation marked &quot;Looks good (Recommended)&quot;">Accept all recommended</button>
+    <button id="accept-all-suggested-btn" class="bulk-action-btn" type="button" title="Accept the suggested text for every pending change">Accept all suggested</button>
+    <button id="theme-toggle" class="theme-toggle" type="button"></button>
+    <button id="print-btn" type="button">Print</button>
+    <button id="save-btn" disabled>Save &amp; write file</button>
+  </div>
+</header>
+<main id="doc"></main>
+<div id="save-toast" class="save-status"></div>
+<script src="/app.js"></script>
+</body>
+</html>
