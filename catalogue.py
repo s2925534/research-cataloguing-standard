@@ -16,6 +16,12 @@ Project-specific folder names, organisation/system codes and domain-identifier
 patterns are never hardcoded here - they come from
 instance/project_config.json -> cataloguing_rules, loaded at runtime.
 
+Global flag (any command):
+    --source /path/one,/path/two
+        Overrides instance/.env's SOURCE_DATA_ROOTS for this run only (same
+        comma-separated format as the .env value). Nothing is written back
+        to .env - pass it again next time you want the same override.
+
 Usage:
     python3 catalogue.py scan          # Pass 1: inventory + hash + repo rollups
     python3 catalogue.py extract       # Pass 2: content preview + heuristic classification
@@ -53,7 +59,7 @@ Usage:
                                         # (needs `pip install jsonschema` - see requirements.txt; not part of
                                         # `all`), writes schema_validation_report.csv
     python3 catalogue.py verify        # data-integrity regression check (filename/path consistency)
-    python3 catalogue.py all [--dry-run] [--limit N]
+    python3 catalogue.py all [--dry-run] [--limit N] [--apply-rename [--skip-duplicates] [--nested] [--group-literature]]
                                         # scan + extract + enrich + duplicates + near-duplicates + group +
                                         # rename-plan + review-queue + export + verify + stats.
                                         # --dry-run runs the real pipeline against a disposable copy of
@@ -61,6 +67,11 @@ Usage:
                                         # instance/catalogued_files/ are never written to. --limit N trims
                                         # the copy to the first N catalogue_ids (by catalogue_id) right
                                         # after scan, so the rest of the pipeline only processes N records.
+                                        # --apply-rename additionally runs Pass 4 (the real copy step) at
+                                        # the end - off by default, so plain `all` still just proposes a
+                                        # plan. Takes the same --skip-duplicates/--nested/--group-literature
+                                        # modifiers as the standalone apply-rename command. Under --dry-run,
+                                        # --apply-rename only previews (nothing is ever copied).
     python3 catalogue.py stats         # summary counts
 
 Standard-specific catalogue modes - one flag per external metadata/cataloguing
@@ -196,6 +207,7 @@ EXTENSION_ARTEFACT_TYPE = {
     ".csv": "CSV-EXPORT", ".xlsx": "XLSX-EXPORT", ".eml": "EMAIL",
     ".java": "SCRIPT", ".sh": "SCRIPT", ".sql": "SCRIPT", ".mjs": "SCRIPT", ".js": "SCRIPT",
     ".bpmn": "DIAGRAM", ".jpg": "PHOTO", ".jpeg": "PHOTO", ".png": "SCREENSHOT",
+    ".acsm": "DRM-LOAN-TICKET",
 }
 
 TEXT_EXTENSIONS = {
@@ -374,6 +386,12 @@ def get_db() -> sqlite3.Connection:
     INSTANCE_DIR.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    # WAL avoids the default rollback-journal's create/delete-per-commit churn,
+    # which cloud-sync daemons (iCloud Drive's bird/fileproviderd under
+    # ~/Documents, Dropbox, etc.) can race against and corrupt; busy_timeout
+    # makes SQLite retry instead of raising immediately on a momentary lock.
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=30000")
     conn.executescript(SCHEMA_SQL)
     existing_cols = {row["name"] for row in conn.execute("PRAGMA table_info(catalogue)")}
     for column, coltype in (
@@ -697,6 +715,35 @@ def extract_html(path: Path) -> tuple[str | None, str, bool]:
         return None, f"html_error:{exc}", False
 
 
+def extract_acsm(path: Path) -> tuple[str | None, str, bool]:
+    meta = extract_acsm_metadata(path)
+    if not meta.get("title") and not meta.get("creator"):
+        return None, "acsm_unparseable", False
+
+    authors = "; ".join(a.strip() for a in (meta.get("creator") or "").split(";") if a.strip())
+    lines = [
+        "[DRM library-loan ticket, not the actual book - see catalogue.py's "
+        "extract_acsm_metadata() docstring. Open this .acsm in Adobe Digital "
+        "Editions before it expires to access the real content; nothing here "
+        "attempts to fetch or decrypt it.]",
+        f"Title: {meta.get('title') or '(unknown)'}",
+        f"Author(s): {authors or '(unknown)'}",
+    ]
+    if meta.get("publisher"):
+        lines.append(f"Publisher: {meta['publisher']}")
+    if meta.get("format"):
+        lines.append(f"Format: {meta['format']}")
+    if meta.get("distributor"):
+        lines.append(f"Loan distributor: {meta['distributor']}")
+    if meta.get("operatorURL"):
+        lines.append(f"Fulfillment operator: {meta['operatorURL']}")
+    if meta.get("purchase"):
+        lines.append(f"Loan started: {meta['purchase']}")
+    if meta.get("expiration"):
+        lines.append(f"Loan expires: {meta['expiration']}")
+    return "\n".join(lines), "acsm_metadata_xml", False
+
+
 def extract_plain(path: Path) -> tuple[str | None, str, bool]:
     """UTF-16 files (common from Windows tooling - DB dump exports, Teams/
     Zoom transcripts) decode as UTF-8 without raising an error, since a NUL
@@ -733,6 +780,8 @@ def extract_content(path: Path) -> tuple[str | None, str, bool]:
         return extract_image_ocr(path)
     if ext in (".html", ".htm"):
         return extract_html(path)
+    if ext == ".acsm":
+        return extract_acsm(path)
     if ext in TEXT_EXTENSIONS:
         return extract_plain(path)
     return None, "no_extractor", False
@@ -857,6 +906,41 @@ def extract_docx_metadata(path: Path) -> dict:
     return {"title": find("dc", "title"), "creator": find("dc", "creator"), "created": find("dcterms", "created")}
 
 
+def extract_acsm_metadata(path: Path) -> dict:
+    """ACSM ("Adobe Content Server Message") files are unencrypted XML
+    fulfillment tickets for a DRM-protected library/publisher e-book loan -
+    they are NOT the book itself. The real content only exists once the
+    ticket is fulfilled through Adobe Digital Editions (the official,
+    licensed client), which is the only thing this project does or should
+    do with one - it does not implement Adobe's fulfillment protocol and
+    does not touch the resulting Adobe DRM in any way; both would be
+    circumvention. What's safe and useful to read is the ticket's own
+    plaintext <dc:...> metadata below, same as any other XML sidecar."""
+    from xml.etree import ElementTree as ET
+
+    try:
+        root = ET.parse(path).getroot()
+    except Exception:
+        return {}
+
+    ns = {"adept": "http://ns.adobe.com/adept", "dc": "http://purl.org/dc/elements/1.1/"}
+
+    def find(prefix: str, tag: str) -> str | None:
+        el = root.find(f".//{{{ns[prefix]}}}{tag}")
+        return el.text.strip() if el is not None and el.text else None
+
+    return {
+        "title": find("dc", "title"),
+        "creator": find("dc", "creator"),
+        "publisher": find("dc", "publisher"),
+        "format": find("dc", "format"),
+        "distributor": find("adept", "distributor"),
+        "operatorURL": find("adept", "operatorURL"),
+        "purchase": find("adept", "purchase"),
+        "expiration": find("adept", "expiration"),
+    }
+
+
 def find_domain_identifiers(patterns: dict, *texts: str | None) -> dict[str, list[str]]:
     """Runs each configured (field_name -> compiled regex) over the given texts."""
     found: dict[str, list[str]] = {}
@@ -949,6 +1033,17 @@ def cmd_enrich(project_config: dict, env: dict) -> None:
                 document_date = created[:10]
                 review_notes = None
                 metadata_confidence = 0.7
+        elif ext == ".acsm" and path.exists():
+            meta = extract_acsm_metadata(path)
+            title = html.unescape((meta.get("title") or "").strip()) or None
+            authors_list = [a.strip() for a in (meta.get("creator") or "").split(";") if a.strip()]
+            if authors_list:
+                authors_json = json.dumps(authors_list)
+            if title or authors_list:
+                # Not setting document_date: <purchase>/<expiration> are the
+                # loan transaction's dates, not the book's own publication
+                # date, unlike the pdf/docx branches' embedded creation dates.
+                metadata_confidence = 0.6
 
         identifiers = find_domain_identifiers(
             rules["domain_identifier_patterns"], row["original_filename"], row["content_preview"]
@@ -2173,8 +2268,12 @@ def cmd_stats() -> None:
     conn.close()
 
 
-def cmd_all(project_config: dict, env: dict, dry_run: bool = False, limit: int | None = None) -> None:
-    """Runs the full non-AI, non-apply-rename pipeline in order.
+def cmd_all(project_config: dict, env: dict, dry_run: bool = False, limit: int | None = None,
+            apply_rename: bool = False, skip_duplicates: bool = False, nested: bool = False,
+            group_literature: bool = False) -> None:
+    """Runs the full non-AI pipeline in order. apply-rename (Pass 4, the
+    actual copy step) is opt-in via --apply-rename - off by default, so
+    plain `all` is unchanged and still stops after proposing a plan.
 
     --dry-run: every cmd_* below manages its own sqlite3 connection and
     commits independently (scan commits every 200 rows, extract/enrich/etc.
@@ -2186,7 +2285,9 @@ def cmd_all(project_config: dict, env: dict, dry_run: bool = False, limit: int |
     against a disposable copy of catalogue.db, then discard the copy.
     instance/catalogue.db and instance/catalogued_files/ are never opened in
     this mode - every path a cmd_* function writes through is redirected to
-    a temp directory for the duration of the call.
+    a temp directory for the duration of the call. --apply-rename under
+    --dry-run only previews (execute=False) - it never copies real files,
+    matching the "nothing written outside the temp dir" guarantee.
 
     --limit N: scan runs first, unrestricted, against the full real source
     tree (so "0 new files found" still means what it normally means); only
@@ -2208,6 +2309,8 @@ def cmd_all(project_config: dict, env: dict, dry_run: bool = False, limit: int |
         cmd_export_jsonl()
         cmd_verify()
         cmd_stats()
+        if apply_rename:
+            cmd_apply_rename(env, skip_duplicates, nested, group_literature, execute=True)
         return
 
     real_db_path = DB_PATH
@@ -2254,6 +2357,8 @@ def cmd_all(project_config: dict, env: dict, dry_run: bool = False, limit: int |
         cmd_export_jsonl()
         cmd_verify()
         cmd_stats()
+        if apply_rename:
+            cmd_apply_rename(env, skip_duplicates, nested, group_literature, execute=False)
 
         print(f"\nDRY RUN complete. Nothing written to {real_db_path.relative_to(ROOT_DIR)} or "
               f"{CATALOGUE_DIR.relative_to(ROOT_DIR)}/. Preview output left at {tmp_dir} for inspection "
@@ -2283,6 +2388,20 @@ def main() -> int:
 
     project_config = load_json(INSTANCE_DIR / "project_config.json")
     env = load_env()
+
+    if "--source" in sys.argv:
+        idx = sys.argv.index("--source")
+        if idx + 1 >= len(sys.argv):
+            print("ERROR: --source requires a value, e.g. --source /path/one,/path/two")
+            return 1
+        # Overrides instance/.env's SOURCE_DATA_ROOTS for this invocation only -
+        # every cmd_* function reads env["SOURCE_DATA_ROOTS"], so setting it here
+        # before dispatch covers scan/all/rename-plan/apply-rename uniformly.
+        # Removed from argv so downstream per-command flag parsing (sys.argv[2:])
+        # never sees it.
+        env["SOURCE_DATA_ROOTS"] = sys.argv[idx + 1]
+        del sys.argv[idx:idx + 2]
+
     CATALOGUE_DIR.mkdir(parents=True, exist_ok=True)
 
     if command in ("scan", "migrate", "validate", "export", "update-references"):
@@ -2365,7 +2484,12 @@ def main() -> int:
         args = sys.argv[2:]
         dry_run = "--dry-run" in args
         limit = int(args[args.index("--limit") + 1]) if "--limit" in args else None
-        cmd_all(project_config, env, dry_run=dry_run, limit=limit)
+        apply_rename = "--apply-rename" in args
+        skip_duplicates = "--skip-duplicates" in args
+        nested = "--nested" in args
+        group_literature = "--group-literature" in args
+        cmd_all(project_config, env, dry_run=dry_run, limit=limit, apply_rename=apply_rename,
+                skip_duplicates=skip_duplicates, nested=nested, group_literature=group_literature)
     else:
         print(f"Unknown command: {command}")
         print(__doc__)
