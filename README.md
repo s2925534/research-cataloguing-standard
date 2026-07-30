@@ -575,6 +575,20 @@ the file you want to change (never overwrite the original in place), then
 run `review.py <original> <proposed-copy>` to review the changes
 sentence-by-sentence before any of them are kept.
 
+A "Download ▾" menu in the toolbar exports the document *as currently
+reviewed* (whatever's been accepted/kept/edited so far — nothing needs to
+be saved to disk first) as PDF, Word (`.docx`), or Markdown, each in two
+versions: "As shown" keeps every inline marker; "Clean" strips this
+project's own catalogue/citation-tracking markers (`[CE-####]` and its
+trailing annotation, `[INTERNAL EVIDENCE - ...]`, `[NEW - added ...]`
+reference-list flags, and the standard uncertainty markers like
+`[UNVERIFIED_SOURCE]`) for a submission-ready read — see
+`strip_catalogue_markers()`. It's best-effort text surgery, not a
+proofreader; skim the result before sending it anywhere. PDF/Word export
+needs `pandoc` on PATH (PDF also needs one of `wkhtmltopdf`/`weasyprint`/a
+LaTeX engine); Markdown export has no external dependency. Missing tooling
+shows a clear in-browser error instead of a silent failure.
+
 ## Legacy-to-DSR catalogue migration
 
 `catalogues/legacy_dsr_migration.py` (with its CLI front-end,

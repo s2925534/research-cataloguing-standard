@@ -796,6 +796,7 @@
   const saveBtn = document.getElementById("save-btn");
   const printBtn = document.getElementById("print-btn");
   const saveStatusEl = document.getElementById("save-toast");
+  const downloadMenu = document.getElementById("download-menu");
 
   // Floating, self-dismissing toast (replaces the old always-visible toolbar
   // status text). `autoHide` is false for the transient "Saving…" state
@@ -1398,6 +1399,67 @@
   }
 
   saveBtn.addEventListener("click", save);
+
+  // --- Download (PDF/Word/Markdown, as-shown or clean) ---------------------
+  // Reuses whatever's currently decided in the review UI (same decisions/
+  // block_overrides/insertions shape as save()), but never writes to disk —
+  // /api/export just renders it and streams the file back.
+  function extractFilename(contentDisposition, fallback) {
+    const match = /filename="([^"]+)"/.exec(contentDisposition || "");
+    return match ? match[1] : fallback;
+  }
+
+  function triggerBlobDownload(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  function downloadDocument(format, clean, btn) {
+    const originalLabel = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "Preparing…";
+    showSaveToast(`Preparing ${format.toUpperCase()} (${clean ? "clean" : "as shown"})…`, "state-saving", false);
+    fetch("/api/export", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ decisions, block_overrides: blockOverrides, insertions, format, clean }),
+    })
+      .then(async (r) => {
+        if (!r.ok) {
+          const data = await r.json().catch(() => ({}));
+          throw new Error(data.error || `export failed (HTTP ${r.status})`);
+        }
+        const blob = await r.blob();
+        const filename = extractFilename(r.headers.get("Content-Disposition"), `document.${format}`);
+        triggerBlobDownload(blob, filename);
+        showSaveToast(`✓ Downloaded ${filename}`, "state-success", true);
+      })
+      .catch((err) => showSaveToast("✗ " + err.message, "state-error", true))
+      .finally(() => {
+        btn.disabled = false;
+        btn.textContent = originalLabel;
+        downloadMenu.removeAttribute("open");
+      });
+  }
+
+  if (downloadMenu) {
+    downloadMenu.querySelectorAll(".dl-menu-list button").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        downloadDocument(btn.dataset.format, btn.dataset.clean === "1", btn);
+      });
+    });
+    document.addEventListener("click", (e) => {
+      if (downloadMenu.hasAttribute("open") && !downloadMenu.contains(e.target)) {
+        downloadMenu.removeAttribute("open");
+      }
+    });
+  }
   if (printBtn) printBtn.addEventListener("click", () => window.print());
 
   // --- Bulk actions --------------------------------------------------------

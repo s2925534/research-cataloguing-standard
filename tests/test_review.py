@@ -212,5 +212,53 @@ class TestSectionTracking(unittest.TestCase):
             self.assertEqual(sub["section"], "## Section A")
 
 
+class TestStripCatalogueMarkers(unittest.TestCase):
+    def test_ce_marker_with_annotation_removed(self):
+        text = "as shown (Panayides & Song, 2009 [CE-0124 — see note, weak support])."
+        self.assertEqual(
+            review.strip_catalogue_markers(text),
+            "as shown (Panayides & Song, 2009).",
+        )
+
+    def test_plain_ce_marker_removed(self):
+        text = "supported (Mankins, 1995 [CE-0063]; Peltz, 2002 [CE-0052])."
+        self.assertEqual(
+            review.strip_catalogue_markers(text),
+            "supported (Mankins, 1995; Peltz, 2002).",
+        )
+
+    def test_internal_evidence_marker_removed(self):
+        text = "names this field directly [INTERNAL EVIDENCE — DSR-REF-GRY-0409], while continuing."
+        self.assertEqual(
+            review.strip_catalogue_markers(text),
+            "names this field directly, while continuing.",
+        )
+
+    def test_new_reference_flag_removed(self):
+        text = (
+            "World Customs Organization. (2021). *SAFE Framework.* WCO. "
+            "[NEW — added 2026-07-20, flagged for review. See CE-0070.]"
+        )
+        self.assertEqual(
+            review.strip_catalogue_markers(text),
+            "World Customs Organization. (2021). *SAFE Framework.* WCO.",
+        )
+
+    def test_standard_uncertainty_markers_removed(self):
+        for marker in review.STANDARD_UNCERTAINTY_MARKERS:
+            text = f"a claim needing evidence [{marker}] here."
+            self.assertNotIn(marker, review.strip_catalogue_markers(text))
+
+    def test_unrelated_bracket_text_untouched(self):
+        text = "See the appendix [Appendix A] for details, or [1] in the numbered list."
+        self.assertEqual(review.strip_catalogue_markers(text), text)
+
+
+class TestFindPdfEngine(unittest.TestCase):
+    def test_returns_none_or_a_known_candidate(self):
+        engine = review.find_pdf_engine()
+        self.assertTrue(engine is None or engine in review.PDF_ENGINE_CANDIDATES)
+
+
 if __name__ == "__main__":
     unittest.main()

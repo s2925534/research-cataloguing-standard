@@ -30,6 +30,19 @@
     <button id="accept-all-suggested-btn" class="bulk-action-btn" type="button" title="Accept the suggested text for every pending change">Accept all suggested</button>
     <button id="theme-toggle" class="theme-toggle" type="button"></button>
     <button id="print-btn" type="button">Print</button>
+    <details id="download-menu" class="dl-menu">
+      <summary>Download &#9662;</summary>
+      <div class="dl-menu-list">
+        <div class="dl-menu-group-label">As shown (with references)</div>
+        <button type="button" data-format="pdf" data-clean="0">PDF</button>
+        <button type="button" data-format="docx" data-clean="0">Word (.docx)</button>
+        <button type="button" data-format="md" data-clean="0">Markdown</button>
+        <div class="dl-menu-group-label">Clean (no catalogue references)</div>
+        <button type="button" data-format="pdf" data-clean="1">PDF</button>
+        <button type="button" data-format="docx" data-clean="1">Word (.docx)</button>
+        <button type="button" data-format="md" data-clean="1">Markdown</button>
+      </div>
+    </details>
     <button id="save-btn" disabled>Save &amp; write file</button>
   </div>
 </header>

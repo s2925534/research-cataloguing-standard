@@ -82,6 +82,19 @@
       hover/click tooltips on `[CE-####]`/`[CLAIM_NEEDS_REVISION]`-style
       inline markers in the review UI — harmless no-op for documents that
       don't use that marker convention.
+      Added a "Download" toolbar menu — exports the document as currently
+      reviewed (nothing needs saving to disk first) as PDF, Word (`.docx`),
+      or Markdown, each in "as shown" or "clean" (strips `[CE-####]`,
+      `[INTERNAL EVIDENCE - ...]`, `[NEW - added ...]`, and the standard
+      uncertainty markers via the new `strip_catalogue_markers()`) — for
+      previewing a submission-ready read without touching the live document.
+      PDF/Word go through `pandoc` (PDF additionally needs
+      `wkhtmltopdf`/`weasyprint`/a LaTeX engine on PATH — `find_pdf_engine()`
+      picks whichever's available); missing tooling reports a clear error
+      to the browser instead of failing silently. Markdown export needs no
+      external tool. (`/api/export`, tests in
+      `TestStripCatalogueMarkers`/`TestFindPdfEngine` in
+      `tests/test_review.py`, added 2026-07-30)
 
 ## Legacy-to-DSR catalogue migration
 

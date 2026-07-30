@@ -22,7 +22,10 @@ import difflib
 import json
 import mimetypes
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -31,6 +34,56 @@ from urllib.parse import unquote, urlparse
 
 STATIC_DIR = Path(__file__).resolve().parent / "review_ui"
 SAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
+
+# Candidate PDF-rendering backends for `pandoc --pdf-engine=...`, checked in
+# this order (first one found on PATH wins). Kept as a list rather than
+# assuming one specific engine, since which of these is installed varies by
+# machine and none is a hard dependency of this project.
+PDF_ENGINE_CANDIDATES = ["wkhtmltopdf", "weasyprint", "pdflatex", "xelatex", "lualatex"]
+
+# Markers this project's citation/evidence-tracking convention embeds inline
+# (see AGENTS.md/CLAUDE.md's "standard uncertainty markers", and review.py's
+# own CITATION_ENTRY_FIELDS above) — stripped for a "clean", submission-ready
+# export. Exact-match, no wildcard, so unrelated bracketed text is untouched.
+STANDARD_UNCERTAINTY_MARKERS = [
+    "UNVERIFIED_SOURCE", "NEEDS_SOURCE", "CLAIM_NEEDS_REVISION",
+    "PAGE_NEEDED", "QUOTE_NEEDED", "INTERNAL_EVIDENCE_NEEDED",
+]
+_CE_MARKER_RE = re.compile(r"\[CE-\d{3,6}(?:\s*[—-][^\]]*)?\]")
+_INTERNAL_EVIDENCE_MARKER_RE = re.compile(r"\[INTERNAL[ _]EVIDENCE\s*[—-][^\]]*\]", re.IGNORECASE)
+_NEW_REFERENCE_MARKER_RE = re.compile(r"\[NEW\s*[—-]\s*added[^\]]*\]", re.IGNORECASE)
+_STANDARD_MARKER_RE = re.compile(
+    r"\[(?:" + "|".join(re.escape(m) for m in STANDARD_UNCERTAINTY_MARKERS) + r")\]"
+)
+
+
+def strip_catalogue_markers(text: str) -> str:
+    """Remove this project's inline catalogue/citation-tracking markers —
+    [CE-####] (with any trailing " — ..." annotation), [INTERNAL EVIDENCE -
+    ...], [NEW - added ...] reference-list flags, and the standard
+    uncertainty markers — for a "clean", submission-ready read of the
+    document. Best-effort only: removing a bracketed marker can leave a
+    stray space before the punctuation that followed it (e.g. "text [CE-1],
+    more" -> "text , more"), so a light whitespace-before-punctuation
+    cleanup runs afterward. Not a proofreading tool - review the result
+    before submitting anywhere.
+    """
+    text = _CE_MARKER_RE.sub("", text)
+    text = _INTERNAL_EVIDENCE_MARKER_RE.sub("", text)
+    text = _NEW_REFERENCE_MARKER_RE.sub("", text)
+    text = _STANDARD_MARKER_RE.sub("", text)
+    text = re.sub(r"[ \t]+([,.;:!?)\]])", r"\1", text)
+    text = re.sub(r"([ \t])[ \t]+", r"\1", text)
+    text = re.sub(r"\(\s*\)", "", text)
+    text = re.sub(r"[ \t]+$", "", text, flags=re.MULTILINE)
+    return text
+
+
+def find_pdf_engine() -> str | None:
+    for candidate in PDF_ENGINE_CANDIDATES:
+        if shutil.which(candidate):
+            return candidate
+    return None
 
 SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"'(\[])")
 TABLE_SEPARATOR_RE = re.compile(r"^\s*\|?[\s:|-]*-[\s:|-]*\|?\s*$")
@@ -596,6 +649,14 @@ class ReviewHandler(BaseHTTPRequestHandler):
     def _send_json(self, obj, status: int = 200) -> None:
         self._send_bytes(json.dumps(obj).encode("utf-8"), "application/json; charset=utf-8", status)
 
+    def _send_download(self, body: bytes, content_type: str, filename: str) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.end_headers()
+        self.wfile.write(body)
+
     def _serve_static(self, filename: str, content_type: str) -> None:
         path = STATIC_DIR / filename
         if not path.is_file():
@@ -656,6 +717,8 @@ class ReviewHandler(BaseHTTPRequestHandler):
             self._handle_save(payload)
         elif path == "/api/upload-asset":
             self._handle_upload(payload)
+        elif path == "/api/export":
+            self._handle_export(payload)
         else:
             self.send_error(404)
 
@@ -701,6 +764,84 @@ class ReviewHandler(BaseHTTPRequestHandler):
             "backup_path": str(backup_path) if backup_path else None,
             "followup_report_path": followup_report_path,
         })
+
+    def _handle_export(self, payload: dict) -> None:
+        """Render the current review state (whatever's currently decided —
+        same reconstruct() as /api/save, just never written to disk here) as
+        a downloadable file. `clean=True` strips this project's inline
+        catalogue/citation-tracking markers first (see
+        strip_catalogue_markers()) for a submission-ready read; `clean=False`
+        keeps them, e.g. for an internal reviewer who wants to see everything.
+        `format` is one of "md" (no external tool needed), "docx", or "pdf"
+        (both via pandoc — see find_pdf_engine() for the PDF backend)."""
+        decisions = payload.get("decisions", {})
+        block_overrides = payload.get("block_overrides", {})
+        insertions = payload.get("insertions", {})
+        fmt = payload.get("format", "md")
+        clean = bool(payload.get("clean"))
+
+        merged = reconstruct(
+            self.server.blocks, decisions, block_overrides, insertions,
+            default_action=self.server.default_action,
+        )
+        if clean:
+            merged = strip_catalogue_markers(merged)
+
+        stem = self.server.output_path.stem or "document"
+        suffix = "clean" if clean else "as-shown"
+        base_filename = f"{stem}_{suffix}"
+
+        if fmt == "md":
+            self._send_download(
+                merged.encode("utf-8"), "text/markdown; charset=utf-8", f"{base_filename}.md",
+            )
+            return
+
+        if shutil.which("pandoc") is None:
+            self._send_json(
+                {"error": "pandoc is not installed on this machine — install it "
+                          "(e.g. `brew install pandoc`) to export PDF/Word, or "
+                          "download Markdown instead."},
+                501,
+            )
+            return
+
+        pandoc_cmd = ["pandoc", "--resource-path", str(self.server.asset_root)]
+        if fmt == "pdf":
+            engine = find_pdf_engine()
+            if engine is None:
+                self._send_json(
+                    {"error": "No PDF engine found on this machine (looked for: "
+                              + ", ".join(PDF_ENGINE_CANDIDATES) + "). Install one "
+                              "(e.g. `brew install wkhtmltopdf`), or download "
+                              "Word/Markdown instead."},
+                    501,
+                )
+                return
+            pandoc_cmd += ["--pdf-engine", engine]
+            out_suffix, content_type = ".pdf", "application/pdf"
+        elif fmt == "docx":
+            out_suffix = ".docx"
+            content_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        else:
+            self._send_json({"error": f"unknown format: {fmt!r}"}, 400)
+            return
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_dir = Path(tmp)
+            in_path = tmp_dir / "input.md"
+            out_path = tmp_dir / f"output{out_suffix}"
+            in_path.write_text(merged, encoding="utf-8")
+            result = subprocess.run(
+                pandoc_cmd + [str(in_path), "-o", str(out_path)],
+                capture_output=True, text=True,
+            )
+            if result.returncode != 0 or not out_path.is_file():
+                self._send_json(
+                    {"error": f"pandoc failed: {result.stderr.strip() or 'unknown error'}"}, 500,
+                )
+                return
+            self._send_download(out_path.read_bytes(), content_type, f"{base_filename}{out_suffix}")
 
     def _handle_upload(self, payload: dict) -> None:
         filename = payload.get("filename") or "upload"
