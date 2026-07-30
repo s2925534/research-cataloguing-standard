@@ -102,6 +102,43 @@ body {
 #toolbar-right { display: flex; align-items: center; gap: 0.75rem; }
 #counts { color: var(--muted); font-size: 0.9rem; }
 
+.item-nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+.item-nav button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.6rem;
+  height: 1.6rem;
+  padding: 0;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 0.3rem;
+  font-size: 0.7rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.item-nav button:hover:not(:disabled) { background: var(--card-bg); border-color: var(--accent); }
+.item-nav button:disabled { opacity: 0.4; cursor: default; }
+#nav-counter { min-width: 5.5rem; text-align: center; font-variant-numeric: tabular-nums; }
+
+@keyframes nav-flash {
+  0%, 100% { box-shadow: 0 0 0 0 transparent; border-color: var(--border); }
+  20% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 45%, transparent); border-color: var(--accent); }
+}
+.card.nav-highlight {
+  animation: nav-flash 1.1s ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .card.nav-highlight { animation: none; outline: 2px solid var(--accent); }
+}
+
 .theme-toggle {
   display: inline-flex;
   align-items: center;

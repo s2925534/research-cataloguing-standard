@@ -797,6 +797,9 @@
   const printBtn = document.getElementById("print-btn");
   const saveStatusEl = document.getElementById("save-toast");
   const downloadMenu = document.getElementById("download-menu");
+  const navPrevBtn = document.getElementById("nav-prev-btn");
+  const navNextBtn = document.getElementById("nav-next-btn");
+  const navCounterEl = document.getElementById("nav-counter");
 
   // Floating, self-dismissing toast (replaces the old always-visible toolbar
   // status text). `autoHide` is false for the transient "Saving…" state
@@ -873,7 +876,58 @@
     if (overriddenCount()) text += ` · ${overriddenCount()} block(s) manually edited`;
     if (insertedCount()) text += ` · ${insertedCount()} new block(s) inserted`;
     countsEl.textContent = text;
+    updateNavCounter();
   }
+
+  // --- Change-card navigation (jump between review items without scrolling) -
+  // Cards are the atomic reviewable units (buildCard()'s <div class="card">),
+  // whether they're a whole changed block or one sentence inside a changed
+  // paragraph's sentence_group - querying for them fresh each time means this
+  // stays correct across re-renders (bulk-accept actions rebuild the DOM).
+  let currentCardIndex = -1;
+
+  function getReviewCards() {
+    return Array.from(docEl.querySelectorAll(".card"));
+  }
+
+  function updateNavCounter() {
+    const total = getReviewCards().length;
+    navPrevBtn.disabled = total === 0;
+    navNextBtn.disabled = total === 0;
+    if (!total) {
+      navCounterEl.textContent = "no changes";
+      currentCardIndex = -1;
+      return;
+    }
+    const shown = Math.min(Math.max(currentCardIndex, 0), total - 1) + 1;
+    navCounterEl.textContent = `Item ${shown} / ${total}`;
+  }
+
+  function jumpToCard(index) {
+    const cards = getReviewCards();
+    if (!cards.length) return;
+    index = Math.max(0, Math.min(index, cards.length - 1));
+    currentCardIndex = index;
+    const card = cards[index];
+    card.scrollIntoView({ behavior: "smooth", block: "center" });
+    card.classList.remove("nav-highlight");
+    // Force reflow so re-adding the class restarts the flash animation even
+    // if the same card was just highlighted (e.g. clicking Next at the end).
+    void card.offsetWidth;
+    card.classList.add("nav-highlight");
+    setTimeout(() => card.classList.remove("nav-highlight"), 1200);
+    updateNavCounter();
+  }
+
+  navPrevBtn.addEventListener("click", () => jumpToCard(currentCardIndex - 1));
+  navNextBtn.addEventListener("click", () => jumpToCard(currentCardIndex + 1));
+
+  document.addEventListener("keydown", (e) => {
+    const tag = (document.activeElement && document.activeElement.tagName) || "";
+    if (tag === "TEXTAREA" || tag === "INPUT" || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.key === "j") { e.preventDefault(); jumpToCard(currentCardIndex + 1); }
+    else if (e.key === "k") { e.preventDefault(); jumpToCard(currentCardIndex - 1); }
+  });
 
   function setDecision(id, action, text) {
     decisions[id] = text === undefined ? { action } : { action, text };

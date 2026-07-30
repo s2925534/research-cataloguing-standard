@@ -589,6 +589,14 @@ needs `pandoc` on PATH (PDF also needs one of `wkhtmltopdf`/`weasyprint`/a
 LaTeX engine); Markdown export has no external dependency. Missing tooling
 shows a clear in-browser error instead of a silent failure.
 
+A ▲/▼ pair in the toolbar (keyboard `j`/`k` also work) jumps straight to
+the next or previous reviewable card — whole-block or one sentence inside
+a changed paragraph — with a smooth scroll and a brief highlight flash, so
+reviewing a long document with many scattered changes doesn't mean
+scrolling past everything already decided just to find the next pending
+one. The "Item X / N" counter next to the buttons tracks position; jumping
+past the first or last item clamps instead of erroring.
+
 ## Legacy-to-DSR catalogue migration
 
 `catalogues/legacy_dsr_migration.py` (with its CLI front-end,

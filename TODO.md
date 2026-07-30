@@ -95,6 +95,18 @@
       external tool. (`/api/export`, tests in
       `TestStripCatalogueMarkers`/`TestFindPdfEngine` in
       `tests/test_review.py`, added 2026-07-30)
+      Added ▲/▼ change-card navigation to the toolbar (keyboard `j`/`k`
+      too) — jumps straight to the next/previous reviewable card
+      (whole-block or sentence-level) with a smooth scroll and a brief
+      highlight flash, plus an "Item X / N" counter, so reviewing a long
+      document doesn't mean scrolling past everything already decided to
+      find the next pending change. Queries `.card` elements fresh on each
+      jump so it stays correct across bulk-accept re-renders. Verified via
+      the same headless-Chrome/CDP approach used for earlier UI features:
+      clicked/keyed through a multi-change test document, confirmed the
+      counter and highlighted card track correctly, and confirmed clicking
+      past the first/last item clamps instead of erroring (added
+      2026-07-30).
 
 ## Legacy-to-DSR catalogue migration
 
