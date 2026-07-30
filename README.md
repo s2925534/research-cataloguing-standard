@@ -501,6 +501,127 @@ file's MIME type rather than a resolved PRONOM PUID, since PRONOM
 identification needs file-signature analysis against a format registry
 this project doesn't have access to.
 
+## Reviewing proposed document edits
+
+`review.py` is a standalone, project-agnostic diff-review tool for any two
+text/Markdown files — not tied to the cataloguing engine. Where a normal
+`git diff` shows +/- lines, this renders each change as its own card
+(original vs suggested) so you can decide, per change: keep the original,
+accept the suggestion, or type a manual replacement. Nothing is applied
+until you decide — an undecided change defaults to keeping the original.
+
+```
+python3 review.py <original.md> <proposed.md> [--output OUT] [--port 8765] \
+    [--asset-root DIR] [--media-dir DIR]
+```
+
+Opens a local browser tab served by a small stdlib-only HTTP server (no new
+dependencies). Whole paragraphs that changed are further split
+sentence-by-sentence so a single reworded sentence doesn't force an
+all-or-nothing choice on the rest of the paragraph; tables, lists, code
+blocks and headings are reviewed as atomic blocks instead. Clicking "Save &
+write file" writes the reviewed result to `--output` (default: overwrite
+`<proposed.md>`), always writing a timestamped `*.review-backup-*` copy of
+whatever was at that path first.
+
+Every block is also directly editable, not just the ones the diff flagged
+as changed — hover any paragraph, table, or heading (including untouched
+ones) for an "Edit block" toggle that opens a free-text override. A manual
+override always wins over whatever the diff/decision logic would otherwise
+produce for that block, so you're never limited to just the proposed
+changes.
+
+Context blocks render as real HTML (headings, tables, lists, figures/
+captions) instead of a raw text dump of the Markdown/HTML source, with
+color-coded Added/Removed/Changed badges. Each change also carries a
+status pill — Pending, ✓ Kept original, ✓ Accepted, or ✓ Custom edit — and
+the pane you didn't choose dims once you decide; the same colors show up
+on the inline underline where a changed sentence sits in its surrounding
+paragraph, so you can tell at a glance, without opening the card, whether
+that sentence is still pending or which way it was resolved. The top
+counter breaks decisions down the same way (e.g. "3 accepted, 1 kept
+original, 2 pending"). Every block also has:
+
+- **+ Insert** — add a brand-new image (uploads and inserts a
+  `<figure>`/`<figcaption>`), table (starter template you edit before
+  confirming), or paragraph immediately after that block. A matching
+  control above the first block inserts at the very top of the document.
+  Pending insertions preview inline with a "Remove" option before saving.
+- **Replace image** / **Edit caption** — shown automatically on any block
+  containing a `<img>`/`<figcaption>`, for swapping the picture or
+  rewriting just the caption text without hand-editing raw HTML.
+
+Uploaded images are saved under `--media-dir` (default: a `media/` folder
+next to `<proposed.md>`) and existing `<img src="...">` paths in the
+document are served relative to `--asset-root` (default: current working
+directory) — set these explicitly if the document being reviewed lives
+outside the directory you're running `review.py` from.
+
+The toolbar has a light/dark/system theme toggle: click to cycle System →
+Light → Dark → System; the choice is stored in `localStorage`
+(`review-theme`) and applied via a synchronous `<head>` script before
+first paint, so a stored preference never flashes the wrong theme on load.
+
+`--citation-register PATH` is optional and off by default unless a file
+named `thesis/evidence_maps/citation_evidence_register.md` happens to
+exist next to the current working directory — pass any
+`citation_evidence_register.md`-style file (`CE-####` entries) to power
+hover/click tooltips on `[CE-####]`/`[CLAIM_NEEDS_REVISION]`-style inline
+markers in the review UI. Harmless no-op for documents that don't use that
+marker convention.
+
+Typical flow: make an automated or AI-suggested edit pass into a *copy* of
+the file you want to change (never overwrite the original in place), then
+run `review.py <original> <proposed-copy>` to review the changes
+sentence-by-sentence before any of them are kept.
+
+## Legacy-to-DSR catalogue migration
+
+`catalogues/legacy_dsr_migration.py` (with its CLI front-end,
+`migrate_legacy_to_dsr.py`) migrates a legacy `instance/catalogue.db`
+catalogue into the DSR-based `instance/catalogue_dsr.db` catalogue, and
+rewrites reference markers in any files that cite the old legacy IDs so
+they point at the new DSR stable IDs instead. Three independent,
+inspectable stages, each requiring an explicit flag to actually write
+anything (dry-run by default):
+
+- **`crosswalk`** — reads the legacy DB read-only (sqlite URI `mode=ro`,
+  so it can never write to it, by construction, not just convention),
+  classifies each legacy record's underlying file through the real DSR
+  classifier, and mints DSR entries using the same counters a normal
+  `--dsr` scan uses, so IDs never collide with one. Writes a
+  human-readable `legacy_id -> dsr_stable_id` crosswalk CSV.
+- **`apply-references`** / **`apply-register`** — given a target file and
+  the crosswalk CSV, rewrites legacy-ID tokens inside `[INTERNAL EVIDENCE -
+  ...]` markers, or inside the trailing `(LEGACY-ID)` parenthetical on a
+  citation register's "Source file:" line, to the new DSR stable_id.
+  Always writes to a *copy* — never overwrites the target file at this
+  stage. Academic citation markers (e.g. `[CE-####]`) are left untouched;
+  only catalogue-storage reference tokens are in scope.
+- **`validate`** / **`promote`** — `validate` strips reference-marker
+  spans from both the old and new text and asserts what remains is
+  byte-identical, proving the rewrite touched only reference tokens.
+  `promote` is the only stage that ever writes to a "live" file: it backs
+  the current one up to a timestamped, tracked archive path first (
+  `--label` overrides the default `pre-dsr-migration` tag in that backup
+  filename — use it for a non-DSR promotion, e.g.
+  `--label "pre-gap-audit-fixes"`), then swaps in the updated copy.
+
+`migrate_legacy_to_dsr.py` also adds `rename-files` (renames each active,
+non-excluded, non-rollup catalogued file in place, swapping just the
+legacy-id token already embedded in its current filename for its DSR
+stable_id, and updating `file_name`/`relative_path`/`source_path` in
+`catalogue_dsr.db` to match) and `report` (prints crosswalk coverage
+stats). See `python3 migrate_legacy_to_dsr.py` with no arguments for the
+full command reference.
+
+`review_dsr.py` is a companion browser-based review tool for DSR records
+flagged `confidence_status='Requires Review'` in `instance/catalogue_dsr.db`
+— one record at a time, standard library only. Each decision
+(approve/edit/skip) writes straight to the database as you go, so there's
+no separate save step: closing the browser or server loses nothing, and
+re-running the script later just resumes on whatever's left.
+
 ## Key principle (unchanged from the original standard)
 
 Do not encode every detail in filenames. Use filenames for quick

@@ -15,3 +15,12 @@ updatesPrompt.txt
 # letters, other job-application material, credential recovery codes) -
 # kept locally for whoever runs this tool, never tracked by git.
 unrelated_to_thesis/
+
+# review.py's own pre-save safety snapshots, its citation follow-up report,
+# and migrate_legacy_to_dsr.py's test-conversion preview output - transient
+# working-session artefacts from running the tools, not tool functionality
+# itself, and can otherwise carry stale content into tracked history.
+*.review-backup-*.md
+*-proposed.md
+*.dsr-test-conversion.md
+citation_review_followups.md
