@@ -79,6 +79,39 @@ def strip_catalogue_markers(text: str) -> str:
     return text
 
 
+_HTML_FIGURE_RE = re.compile(
+    r'<figure>\s*<img\s+src="([^"]+)"[^>]*/>\s*<figcaption><p>(.*?)</p></figcaption>\s*</figure>',
+    re.DOTALL,
+)
+
+
+def convert_html_figures_for_pandoc(text: str) -> str:
+    """Rewrite this project's `<figure><img src="..." /><figcaption><p>...</p>
+    </figcaption></figure>` blocks into native `![caption](src)` markdown image
+    syntax, for the docx/pdf export path only.
+
+    Why this exists: pandoc's markdown reader turns raw HTML blocks it can't
+    represent in a non-HTML target (docx, pdf) into RawBlock "html" nodes,
+    which its docx/pdf writers silently drop — the image never gets embedded,
+    though surrounding plain text (including, confusingly, the figcaption's
+    own text) survives. Verified directly: a minimal two-image test document,
+    one native-markdown image and one HTML `<figure>`, round-tripped through
+    `pandoc ... -o out.docx` with only the native-markdown image present in
+    the output's `word/document.xml`. Native `![caption](src)` markdown does
+    not have this problem — pandoc's `implicit_figures` extension (on by
+    default) turns an image-only paragraph into a proper embedded figure with
+    a caption, confirmed the same way.
+
+    Markdown-format exports intentionally skip this rewrite — the original
+    HTML is valid there and some consumers may prefer it as-is.
+    """
+    def _replace(match: re.Match[str]) -> str:
+        src, caption = match.group(1), match.group(2)
+        return f"![{caption}]({src})"
+
+    return _HTML_FIGURE_RE.sub(_replace, text)
+
+
 def find_pdf_engine() -> str | None:
     for candidate in PDF_ENGINE_CANDIDATES:
         if shutil.which(candidate):
@@ -831,7 +864,7 @@ class ReviewHandler(BaseHTTPRequestHandler):
             tmp_dir = Path(tmp)
             in_path = tmp_dir / "input.md"
             out_path = tmp_dir / f"output{out_suffix}"
-            in_path.write_text(merged, encoding="utf-8")
+            in_path.write_text(convert_html_figures_for_pandoc(merged), encoding="utf-8")
             result = subprocess.run(
                 pandoc_cmd + [str(in_path), "-o", str(out_path)],
                 capture_output=True, text=True,
