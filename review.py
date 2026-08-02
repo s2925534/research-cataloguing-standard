@@ -243,12 +243,27 @@ def derive_recommendation(entry: dict[str, str]) -> dict[str, str]:
     notes = entry.get("Notes") or ""
     how_supports = entry.get("How the quote supports the claim") or ""
     haystack = " ".join([review_status, notes, how_supports]).lower()
+    review_status_lower = review_status.strip().lower()
 
-    if "no action needed" in review_status.lower() or "informational" in review_status.lower():
+    if "no action needed" in review_status_lower or "informational" in review_status_lower:
         return {
             "verdict": "info",
             "reason": "Informational corroboration only — no claim change depends on this.",
             "status_label": "Informational only — no action needed",
+        }
+
+    # A human (or an AI acting on the human's explicit instruction) has
+    # already reviewed this entry and recorded a settled outcome — trust
+    # that over the phrase-matching below, which otherwise keeps flagging
+    # entries whose *historical* Notes text still describes a since-fixed
+    # problem (e.g. a note explaining a citation was removed because it
+    # once triggered a CLAIM_NEEDS_REVISION finding will itself contain
+    # "claim_needs_revision" and get misread as a live contradiction).
+    if review_status_lower.startswith(("resolved", "accepted", "verified")):
+        return {
+            "verdict": "accept",
+            "reason": "Marked Resolved/Accepted/Verified in the register — treated as settled.",
+            "status_label": review_status.strip(),
         }
 
     contradiction_hit = next((p for p in _CONTRADICTION_PHRASES if p in haystack), None)
