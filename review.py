@@ -680,10 +680,19 @@ class ReviewServer(ThreadingHTTPServer):
         # Populated by the first successful /api/save this server process
         # handles; returned from /api/diff so a page reload can restore the
         # same decisions instead of showing every change as pending again.
-        # In-memory only (this process is long-lived across reloads, but a
-        # server restart forgets it — the saved *file* is never at risk
-        # either way, only this convenience state).
+        # Persisted to state_path on every save (see _handle_save) so a
+        # server *restart* — routine whenever this file or the document/
+        # citation register changes underneath it — doesn't also throw away
+        # a real review session and make already-saved work look untouched
+        # again. The saved *document* was never at risk either way; this is
+        # just the "what has the human already decided" bookkeeping.
+        self.state_path = output_path.with_name(output_path.name + ".review-state.json")
         self.last_save: dict | None = None
+        if self.state_path.is_file():
+            try:
+                self.last_save = json.loads(self.state_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                self.last_save = None
 
 
 class ReviewHandler(BaseHTTPRequestHandler):
@@ -806,6 +815,12 @@ class ReviewHandler(BaseHTTPRequestHandler):
             "followup_report_path": followup_report_path,
             "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
+        try:
+            self.server.state_path.write_text(
+                json.dumps(self.server.last_save, indent=2), encoding="utf-8",
+            )
+        except OSError:
+            pass
         self._send_json({
             "status": "ok",
             "written_path": str(output_path),
